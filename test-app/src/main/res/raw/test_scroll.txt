@@ -43,7 +43,7 @@ Line 040 - Bright BG: [101m B-Red [102m B-Green [104m B-Blue [0m
 Line 041 - Dim Text: [2mThis text is dim/faint[0m
 Line 042 - Blink: [5mThis text might blink[0m
 Line 043 - Hidden: [8m(Hidden)[0m <--- Hidden text
-Line 044 - Overline: [53mThis is overlined[0m
+Line 044 - Overline: [53mThis is overlined[0m
 Line 045 - Emoji: 😀 😂 🤣 😍 😎 🥳 😡 😱
 Line 046 - Animals: 🐈 🐕 🦊 🦄 🐸 🐵 🐔 🐧
 Line 047 - Food: 🍎 🍔 🍕 🍣 🍩 🍪 🍺 🍷
