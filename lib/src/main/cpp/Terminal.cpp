@@ -18,6 +18,7 @@
 #include <android/log.h>
 #include <cstring>
 #include <algorithm>
+#include <vector>
 
 #define LOG_TAG "TermScreen"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -512,28 +513,64 @@ void Terminal::invokePushScrollbackLine(int cols, const VTermScreenCell* cells) 
     // Get ArrayList class for combining chars
     jclass arrayListClass = env->FindClass("java/util/ArrayList");
     jmethodID arrayListConstructor = env->GetMethodID(arrayListClass, "<init>", "()V");
+    jmethodID arrayListAdd = env->GetMethodID(arrayListClass, "add", "(Ljava/lang/Object;)Z");
 
-    // Create array of ScreenCell objects
-    jobjectArray cellArray = env->NewObjectArray(cols, screenCellClass, nullptr);
-    if (!cellArray) {
-        LOGE("Failed to create ScreenCell array");
-        env->DeleteLocalRef(screenCellClass);
-        env->DeleteLocalRef(arrayListClass);
-        return;
-    }
+    // Get Character class for boxing chars
+    jclass charClass = env->FindClass("java/lang/Character");
+    jmethodID charValueOf = env->GetStaticMethodID(charClass, "valueOf", "(C)Ljava/lang/Character;");
 
-    // Convert each VTermScreenCell to ScreenCell
+    // Build a list to hold actual cells (excluding fullwidth placeholders)
+    std::vector<jobject> screenCells;
+
     for (int i = 0; i < cols; i++) {
         const VTermScreenCell& cell = cells[i];
 
-        // Get the primary character
+        // Get the primary character and handle surrogate pairs
         jchar primaryChar = ' ';
-        if (cell.chars[0] != 0) {
-            primaryChar = (jchar)cell.chars[0];
-        }
-
-        // Create empty list for combining characters (simplified for now)
         jobject combiningList = env->NewObject(arrayListClass, arrayListConstructor);
+
+        if (cell.chars[0] != 0) {
+            uint32_t codepoint = cell.chars[0];
+
+            if (codepoint <= 0xFFFF) {
+                // BMP character - fits in single jchar
+                primaryChar = (jchar)codepoint;
+            } else {
+                // Surrogate pair needed for codepoints > U+FFFF
+                codepoint -= 0x10000;
+                primaryChar = (jchar)(0xD800 + (codepoint >> 10));  // High surrogate
+                jchar lowSurrogate = (jchar)(0xDC00 + (codepoint & 0x3FF));  // Low surrogate
+
+                // Add low surrogate to combining chars
+                jobject lowSurrogateObj = env->CallStaticObjectMethod(charClass, charValueOf, lowSurrogate);
+                env->CallBooleanMethod(combiningList, arrayListAdd, lowSurrogateObj);
+                env->DeleteLocalRef(lowSurrogateObj);
+            }
+
+            // Add any actual combining characters (chars[1] onwards)
+            for (int j = 1; j < VTERM_MAX_CHARS_PER_CELL && cell.chars[j] != 0; j++) {
+                uint32_t combiningCodepoint = cell.chars[j];
+
+                if (combiningCodepoint <= 0xFFFF) {
+                    jobject charObj = env->CallStaticObjectMethod(charClass, charValueOf, (jchar)combiningCodepoint);
+                    env->CallBooleanMethod(combiningList, arrayListAdd, charObj);
+                    env->DeleteLocalRef(charObj);
+                } else {
+                    // Combining character is also a surrogate pair
+                    combiningCodepoint -= 0x10000;
+                    jchar highSurr = (jchar)(0xD800 + (combiningCodepoint >> 10));
+                    jchar lowSurr = (jchar)(0xDC00 + (combiningCodepoint & 0x3FF));
+
+                    jobject highObj = env->CallStaticObjectMethod(charClass, charValueOf, highSurr);
+                    env->CallBooleanMethod(combiningList, arrayListAdd, highObj);
+                    env->DeleteLocalRef(highObj);
+
+                    jobject lowObj = env->CallStaticObjectMethod(charClass, charValueOf, lowSurr);
+                    env->CallBooleanMethod(combiningList, arrayListAdd, lowObj);
+                    env->DeleteLocalRef(lowObj);
+                }
+            }
+        }
 
         // Resolve colors
         uint8_t fgRed, fgGreen, fgBlue;
@@ -562,18 +599,32 @@ void Terminal::invokePushScrollbackLine(int cols, const VTermScreenCell* cells) 
             (jint)cell.width                // width (I)
         );
 
-        env->SetObjectArrayElement(cellArray, i, screenCell);
-        env->DeleteLocalRef(screenCell);
+        // Add to vector (will be converted to array later)
+        screenCells.push_back(screenCell);
         env->DeleteLocalRef(combiningList);
+
+        // Skip next cell if this is a fullwidth character
+        if (cell.width == 2) {
+            i++;  // Skip the placeholder cell
+        }
     }
 
-    // Call the Java callback
-    env->CallIntMethod(mCallbacks, mPushScrollbackMethod, cols, cellArray);
+    // Create array with actual cell count
+    int actualCells = screenCells.size();
+    jobjectArray actualCellArray = env->NewObjectArray(actualCells, screenCellClass, nullptr);
+    for (int i = 0; i < actualCells; i++) {
+        env->SetObjectArrayElement(actualCellArray, i, screenCells[i]);
+        env->DeleteLocalRef(screenCells[i]);
+    }
+
+    // Call the Java callback with actual cell count
+    env->CallIntMethod(mCallbacks, mPushScrollbackMethod, actualCells, actualCellArray);
 
     // Clean up
-    env->DeleteLocalRef(cellArray);
+    env->DeleteLocalRef(actualCellArray);
     env->DeleteLocalRef(screenCellClass);
     env->DeleteLocalRef(arrayListClass);
+    env->DeleteLocalRef(charClass);
 }
 
 void Terminal::invokeKeyboardOutput(const char* data, size_t len) {

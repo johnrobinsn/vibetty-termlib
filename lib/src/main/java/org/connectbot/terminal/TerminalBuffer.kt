@@ -128,6 +128,16 @@ class TerminalBuffer(
                 val combiningChars = mutableListOf<Char>()
                 charIndex++
 
+                // Handle surrogate pairs (characters > U+FFFF like emoji)
+                if (char.isHighSurrogate() && charIndex < cellRun.chars.size) {
+                    val nextChar = cellRun.chars[charIndex]
+                    if (nextChar.isLowSurrogate()) {
+                        // This is a surrogate pair - store low surrogate in combiningChars
+                        combiningChars.add(nextChar)
+                        charIndex++
+                    }
+                }
+
                 // Collect combining characters
                 while (charIndex < cellRun.chars.size && isCombiningCharacter(cellRun.chars[charIndex])) {
                     combiningChars.add(cellRun.chars[charIndex])
@@ -135,7 +145,14 @@ class TerminalBuffer(
                 }
 
                 // Determine cell width (for fullwidth characters)
-                val width = if (isFullwidthCharacter(char)) 2 else 1
+                // For surrogate pairs, check the full codepoint
+                val width = if (combiningChars.isNotEmpty() && combiningChars[0].isLowSurrogate()) {
+                    // Reconstruct codepoint from surrogate pair
+                    val codepoint = Character.toCodePoint(char, combiningChars[0])
+                    if (isFullwidthCodepoint(codepoint)) 2 else 1
+                } else {
+                    if (isFullwidthCharacter(char)) 2 else 1
+                }
 
                 cells.add(
                     TerminalLine.Cell(
@@ -250,7 +267,8 @@ class TerminalBuffer(
                 italic = screenCell.italic,
                 underline = screenCell.underline,
                 reverse = screenCell.reverse,
-                strike = screenCell.strike
+                strike = screenCell.strike,
+                width = screenCell.width
             )
         }
         val line = TerminalLine(row = -1, cells = cellList)  // row -1 for scrollback
@@ -314,6 +332,15 @@ class TerminalBuffer(
      */
     private fun isFullwidthCharacter(char: Char): Boolean {
         val eastAsianWidth = UCharacter.getIntPropertyValue(char.code, UProperty.EAST_ASIAN_WIDTH)
+        return eastAsianWidth == UCharacter.EastAsianWidth.FULLWIDTH ||
+               eastAsianWidth == UCharacter.EastAsianWidth.WIDE
+    }
+
+    /**
+     * Check if a codepoint (including those > U+FFFF) is fullwidth.
+     */
+    private fun isFullwidthCodepoint(codepoint: Int): Boolean {
+        val eastAsianWidth = UCharacter.getIntPropertyValue(codepoint, UProperty.EAST_ASIAN_WIDTH)
         return eastAsianWidth == UCharacter.EastAsianWidth.FULLWIDTH ||
                eastAsianWidth == UCharacter.EastAsianWidth.WIDE
     }
