@@ -291,9 +291,18 @@ internal class TerminalEmulatorImpl(
             currentDefaultBg = currentDefaultBackground
         }
 
-        // Resize currentLines to match new dimensions
-        currentLines = List(newRows) { row ->
-            TerminalLine.empty(row, newCols, currentDefaultFg, currentDefaultBg)
+        // Resize currentLines to match new dimensions, preserving semantic segments
+        synchronized(damageLock) {
+            val oldLines = currentLines
+            currentLines = List(newRows) { row ->
+                if (row < oldLines.size) {
+                    // Preserve semantic segments from the old line
+                    TerminalLine.empty(row, newCols, currentDefaultFg, currentDefaultBg)
+                        .copy(semanticSegments = oldLines[row].semanticSegments)
+                } else {
+                    TerminalLine.empty(row, newCols, currentDefaultFg, currentDefaultBg)
+                }
+            }
         }
 
         // Rebuild all lines after resize
@@ -402,8 +411,10 @@ internal class TerminalEmulatorImpl(
     }
 
     override fun moverect(dest: TermRect, src: TermRect): Int {
-        // For now, treat moverect as a damage region on the destination
-        // A more sophisticated implementation could optimize by copying the screen content
+        // Note: Segment shifting is handled in pushScrollbackLine to ensure correct ordering.
+        // moverect is called BEFORE pushScrollbackLine, so we can't shift segments here
+        // or pushScrollbackLine would get the wrong segments for line 0.
+        // Treat moverect as damage on the destination
         return damage(dest.startRow, dest.endRow, dest.startCol, dest.endCol)
     }
 
@@ -493,14 +504,41 @@ internal class TerminalEmulatorImpl(
                 width = screenCell.width
             )
         }
-        val line = TerminalLine(row = -1, cells = cellList)
 
         synchronized(damageLock) {
+            // FIRST: Preserve semantic segments from line 0 (the line being scrolled out)
+            // This must happen BEFORE we shift segments, since moverect was already called
+            val line0Segments = if (currentLines.isNotEmpty()) {
+                currentLines[0].semanticSegments
+            } else {
+                emptyList()
+            }
+
+            val line = TerminalLine(row = -1, cells = cellList, semanticSegments = line0Segments)
+
             scrollback.add(line)
             if (scrollback.size > maxScrollbackLines) {
                 scrollback.removeAt(0)
             }
             scrollbackDirty = true
+
+            // SECOND: Shift semantic segments up by 1 row (line N's segments move to line N-1)
+            // This simulates what happens when the screen scrolls up
+            if (currentLines.size > 1) {
+                val newLines = currentLines.toMutableList()
+                // Shift segments from line N to line N-1
+                for (row in 0 until currentLines.size - 1) {
+                    newLines[row] = currentLines[row].copy(
+                        semanticSegments = currentLines[row + 1].semanticSegments
+                    )
+                }
+                // Clear segments for the last line (new empty line at bottom)
+                newLines[currentLines.size - 1] = currentLines[currentLines.size - 1].copy(
+                    semanticSegments = emptyList()
+                )
+                currentLines = newLines
+            }
+
             propertyChanged = true
             if (!damagePosted) {
                 handler.post { processPendingUpdates() }
@@ -523,9 +561,10 @@ internal class TerminalEmulatorImpl(
         return 0
     }
 
-    override fun onOscSequence(command: Int, payload: String): Int {
+    override fun onOscSequence(command: Int, payload: String, nativeCursorRow: Int, nativeCursorCol: Int): Int {
+        // Use the native cursor position from libvterm for OSC sequence processing
         val actions = synchronized(damageLock) {
-            oscParser.parse(command, payload, cursorRow, cursorCol, cols)
+            oscParser.parse(command, payload, nativeCursorRow, nativeCursorCol, cols)
         }
 
         synchronized(damageLock) {
@@ -562,8 +601,8 @@ internal class TerminalEmulatorImpl(
     }
 
     /**
-     * Queue a semantic segment to be applied during the next processPendingUpdates.
-     * This ensures segments are applied when the actual text content is available.
+     * Apply a semantic segment immediately to the current line.
+     * Segments are applied immediately so they can be properly shifted during scroll.
      */
     private fun addSemanticSegment(
         row: Int,
@@ -574,16 +613,31 @@ internal class TerminalEmulatorImpl(
         promptId: Int
     ) {
         synchronized(damageLock) {
-            pendingSemanticSegments.add(
-                PendingSemanticSegment(
-                    row = row,
-                    startCol = startCol,
-                    endCol = endCol,
-                    semanticType = semanticType,
-                    metadata = metadata,
-                    promptId = promptId
-                )
+            // Apply immediately to currentLines so segments are shifted correctly during scroll
+            if (row < 0 || row >= currentLines.size) {
+                return
+            }
+
+            val line = currentLines[row]
+            val newSegment = SemanticSegment(
+                startCol = startCol,
+                endCol = endCol,
+                semanticType = semanticType,
+                metadata = metadata,
+                promptId = promptId
             )
+
+            val updatedSegments = (line.semanticSegments + newSegment).sortedBy { it.startCol }
+            currentLines = currentLines.toMutableList().apply {
+                this[row] = line.copy(semanticSegments = updatedSegments)
+            }
+
+            // Mark for update so processPendingUpdates runs
+            propertyChanged = true
+            if (!damagePosted) {
+                handler.post { processPendingUpdates() }
+                damagePosted = true
+            }
         }
     }
 
@@ -645,7 +699,9 @@ internal class TerminalEmulatorImpl(
         val row = segment.row
 
         // Ensure row is valid
-        if (row < 0 || row >= currentLines.size) return
+        if (row < 0 || row >= currentLines.size) {
+            return
+        }
 
         val line = currentLines[row]
 
@@ -770,9 +826,13 @@ internal class TerminalEmulatorImpl(
             col += cellsInRun
         }
 
-        // Update cached line (segments will be added later in processPendingUpdates)
-        currentLines = currentLines.toMutableList().apply {
-            this[row] = TerminalLine(row, cells)
+        // Update cached line, preserving any existing semantic segments
+        // Must synchronize to ensure visibility of segments added by addSemanticSegment
+        synchronized(damageLock) {
+            currentLines = currentLines.toMutableList().apply {
+                val existingSegments = this[row].semanticSegments
+                this[row] = TerminalLine(row, cells, semanticSegments = existingSegments)
+            }
         }
     }
 
