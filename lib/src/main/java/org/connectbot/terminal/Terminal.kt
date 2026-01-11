@@ -34,10 +34,17 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -49,6 +56,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
@@ -80,6 +88,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -148,6 +158,31 @@ private const val MIN_ZOOM_SCALE = 0.5f
  * Maximum zoom scale for pinch-to-zoom gesture.
  */
 private const val MAX_ZOOM_SCALE = 3f
+
+/**
+ * Height of the horizontal scroll indicator in dp.
+ */
+private val HORIZONTAL_SCROLL_INDICATOR_HEIGHT = 4.dp
+
+/**
+ * Horizontal padding for the scroll indicator track.
+ */
+private val HORIZONTAL_SCROLL_INDICATOR_PADDING = 16.dp
+
+/**
+ * Alpha for the scroll indicator track background.
+ */
+private const val SCROLL_INDICATOR_TRACK_ALPHA = 0.3f
+
+/**
+ * Alpha for the scroll indicator thumb.
+ */
+private const val SCROLL_INDICATOR_THUMB_ALPHA = 0.6f
+
+/**
+ * Minimum thumb width as a fraction of track width.
+ */
+private const val SCROLL_INDICATOR_MIN_THUMB_FRACTION = 0.1f
 
 /**
  * Size of the copy button when selection is active in dp.
@@ -266,6 +301,11 @@ private const val DOUBLE_UNDERLINE_SPACING = 2f
  * @param forcedSize Force terminal to specific dimensions (rows, cols). When set, font size is calculated to fit.
  * @param onSelectionControllerAvailable Optional callback providing access to the SelectionController for controlling selection mode
  * @param onHyperlinkClick Callback when user taps on an OSC8 hyperlink. Receives the URL as parameter.
+ * @param virtualWidthColumns Optional number of columns for virtual width. When set, the terminal
+ *                            renders with this many columns (which may exceed the physical screen width)
+ *                            and single-finger horizontal drag pans the view. Height is still calculated
+ *                            from available space. When null (default), terminal sizes to available width.
+ * @param horizontalScrollIndicatorBottomOffset Offset from the bottom for the horizontal scroll indicator.
  */
 @Composable
 fun Terminal(
@@ -285,7 +325,9 @@ fun Terminal(
     forcedSize: Pair<Int, Int>? = null,
     modifierManager: ModifierManager? = null,
     onSelectionControllerAvailable: ((SelectionController) -> Unit)? = null,
-    onHyperlinkClick: (String) -> Unit = {}
+    onHyperlinkClick: (String) -> Unit = {},
+    virtualWidthColumns: Int? = null,
+    horizontalScrollIndicatorBottomOffset: Dp = 0.dp
 ) {
     TerminalWithAccessibility(
         terminalEmulator = terminalEmulator,
@@ -304,7 +346,9 @@ fun Terminal(
         forcedSize = forcedSize,
         modifierManager = modifierManager,
         onSelectionControllerAvailable = onSelectionControllerAvailable,
-        onHyperlinkClick = onHyperlinkClick
+        onHyperlinkClick = onHyperlinkClick,
+        virtualWidthColumns = virtualWidthColumns,
+        horizontalScrollIndicatorBottomOffset = horizontalScrollIndicatorBottomOffset
     )
 }
 
@@ -333,7 +377,9 @@ fun TerminalWithAccessibility(
     modifierManager: ModifierManager? = null,
     forceAccessibilityEnabled: Boolean? = null,
     onSelectionControllerAvailable: ((SelectionController) -> Unit)? = null,
-    onHyperlinkClick: (String) -> Unit = {}
+    onHyperlinkClick: (String) -> Unit = {},
+    virtualWidthColumns: Int? = null,
+    horizontalScrollIndicatorBottomOffset: Dp = 0.dp
 ) {
     if (terminalEmulator !is TerminalEmulatorImpl) {
         Box(
@@ -368,6 +414,12 @@ fun TerminalWithAccessibility(
     var zoomOrigin by remember(terminalEmulator) { mutableStateOf(TransformOrigin.Center) }
     var isZooming by remember(terminalEmulator) { mutableStateOf(false) }
     var calculatedFontSize by remember(terminalEmulator) { mutableStateOf(initialFontSize) }
+
+    // Horizontal pan state for virtual width
+    var horizontalPanOffset by remember(terminalEmulator) { mutableStateOf(0f) }
+
+    // Flag to prevent scroll sync feedback loop during user drag
+    var isUserScrolling by remember(terminalEmulator) { mutableStateOf(false) }
 
     // Magnifying glass state
     var showMagnifier by remember(terminalEmulator) { mutableStateOf(false) }
@@ -657,8 +709,10 @@ fun TerminalWithAccessibility(
             }
 
             // Use base dimensions for terminal sizing (not zoomed dimensions)
-            val newCols =
-                forcedSize?.second ?: charsPerDimension(availableWidth, baseCharWidth)
+            // If virtualWidthColumns is set, use that for columns (allows wider than screen)
+            val newCols = forcedSize?.second
+                ?: virtualWidthColumns
+                ?: charsPerDimension(availableWidth, baseCharWidth)
             val newRows =
                 forcedSize?.first ?: charsPerDimension(availableHeight, baseCharHeight)
 
@@ -669,8 +723,10 @@ fun TerminalWithAccessibility(
         }
 
         // Use base dimensions for terminal sizing (not zoomed dimensions)
-        val newCols =
-            forcedSize?.second ?: charsPerDimension(availableWidth, baseCharWidth)
+        // If virtualWidthColumns is set, use that for columns (allows wider than screen)
+        val newCols = forcedSize?.second
+            ?: virtualWidthColumns
+            ?: charsPerDimension(availableWidth, baseCharWidth)
         val newRows =
             forcedSize?.first ?: charsPerDimension(availableHeight, baseCharHeight)
 
@@ -685,7 +741,10 @@ fun TerminalWithAccessibility(
         }
 
         // Sync scrollOffset when scrollbackPosition changes externally (but not during user scrolling)
-        LaunchedEffect(screenState.scrollbackPosition) {
+        LaunchedEffect(screenState.scrollbackPosition, isUserScrolling) {
+            // Skip sync during user drag to prevent feedback loop
+            if (isUserScrolling) return@LaunchedEffect
+
             val targetOffset = screenState.scrollbackPosition * baseCharHeight
             if (!scrollOffset.isRunning && scrollOffset.value != targetOffset) {
                 scrollOffset.snapTo(targetOffset)
@@ -695,6 +754,17 @@ fun TerminalWithAccessibility(
         // Calculate actual terminal dimensions in pixels
         val terminalWidthPx = newCols * baseCharWidth
         val terminalHeightPx = newRows * baseCharHeight
+
+        // Calculate max horizontal pan offset (only used when virtualWidthColumns is set)
+        val maxHorizontalPan = (terminalWidthPx - availableWidth).coerceAtLeast(0f)
+        val isHorizontalPanEnabled = virtualWidthColumns != null && maxHorizontalPan > 0f
+
+        // Clamp horizontal pan offset when maxHorizontalPan changes (e.g., due to font size change)
+        LaunchedEffect(maxHorizontalPan) {
+            if (horizontalPanOffset > maxHorizontalPan) {
+                horizontalPanOffset = maxHorizontalPan
+            }
+        }
 
         // Draw terminal content with context menu overlay
         Box(
@@ -717,6 +787,7 @@ fun TerminalWithAccessibility(
                 coroutineScope {
                     awaitEachGesture {
                         var gestureType: GestureType = GestureType.Undetermined
+                        var dragScrollOffset = 0f  // Local scroll tracking during drag
                         val down = awaitFirstDown(requireUnconsumed = false)
 
                         // 1. Check if touching a selection handle first
@@ -768,28 +839,30 @@ fun TerminalWithAccessibility(
 
                         // 2. Start long press detection for selection
                         // Only start selection if no selection is already active
+                        // TODO: Re-enable after fixing scroll/pan interaction
                         var longPressDetected = false
                         val longPressJob = launch {
-                            delay(viewConfiguration.longPressTimeoutMillis)
-                            if (gestureType == GestureType.Undetermined &&
-                                selectionManager.mode == SelectionMode.NONE
-                            ) {
-                                longPressDetected = true
-                                gestureType = GestureType.Selection
-
-                                // Start selection
-                                val col = (down.position.x / baseCharWidth).toInt()
-                                    .coerceIn(0, screenState.snapshot.cols - 1)
-                                val row = (down.position.y / baseCharHeight).toInt()
-                                    .coerceIn(0, screenState.snapshot.rows - 1)
-                                selectionManager.startSelection(
-                                    row,
-                                    col,
-                                    SelectionMode.BLOCK
-                                )
-                                showMagnifier = true
-                                magnifierPosition = down.position
-                            }
+                            // TEMPORARILY DISABLED - interferes with scroll/pan
+                            // delay(viewConfiguration.longPressTimeoutMillis)
+                            // if (gestureType == GestureType.Undetermined &&
+                            //     selectionManager.mode == SelectionMode.NONE
+                            // ) {
+                            //     longPressDetected = true
+                            //     gestureType = GestureType.Selection
+                            //
+                            //     // Start selection
+                            //     val col = (down.position.x / baseCharWidth).toInt()
+                            //         .coerceIn(0, screenState.snapshot.cols - 1)
+                            //     val row = (down.position.y / baseCharHeight).toInt()
+                            //         .coerceIn(0, screenState.snapshot.rows - 1)
+                            //     selectionManager.startSelection(
+                            //         row,
+                            //         col,
+                            //         SelectionMode.BLOCK
+                            //     )
+                            //     showMagnifier = true
+                            //     magnifierPosition = down.position
+                            // }
                         }
 
                         // 3. Check for multi-touch (zoom)
@@ -865,6 +938,8 @@ fun TerminalWithAccessibility(
                                 if (dragAmount.getDistanceSquared() > touchSlopSquared) {
                                     longPressJob.cancel()
                                     gestureType = GestureType.Scroll
+                                    // Initialize drag scroll offset from current position
+                                    dragScrollOffset = screenState.scrollbackPosition * baseCharHeight
                                     // Clear any active selection when scrolling starts
                                     if (selectionManager.mode != SelectionMode.NONE) {
                                         selectionManager.clearSelection()
@@ -891,19 +966,26 @@ fun TerminalWithAccessibility(
                                 }
 
                                 GestureType.Scroll -> {
-                                    // Update scroll offset
-                                    // Drag down (positive dragAmount.y) = view older content (increase scrollbackPosition)
-                                    // Drag up (negative dragAmount.y) = view newer content (decrease scrollbackPosition)
-                                    val newOffset = (scrollOffset.value + dragAmount.y)
+                                    // Mark that user is scrolling to prevent sync feedback
+                                    isUserScrolling = true
+
+                                    // Update vertical scroll - accumulate in dragScrollOffset
+                                    // Drag down (positive dragAmount.y) = view older content
+                                    // Drag up (negative dragAmount.y) = view newer content
+                                    dragScrollOffset = (dragScrollOffset + dragAmount.y)
                                         .coerceIn(0f, maxScroll)
-                                    coroutineScope.launch {
-                                        scrollOffset.snapTo(newOffset)
-                                    }
 
                                     // Update terminal buffer scrollback position
-                                    val scrolledLines =
-                                        (newOffset / baseCharHeight).toInt()
+                                    val scrolledLines = (dragScrollOffset / baseCharHeight).toInt()
                                     screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+
+                                    // Update horizontal pan offset (if virtual width enabled)
+                                    // Drag right (negative dragAmount.x) = see content on the left (decrease panOffset)
+                                    // Drag left (positive dragAmount.x) = see content on the right (increase panOffset)
+                                    if (isHorizontalPanEnabled) {
+                                        horizontalPanOffset = (horizontalPanOffset - dragAmount.x)
+                                            .coerceIn(0f, maxHorizontalPan)
+                                    }
                                 }
 
                                 else -> {}
@@ -917,6 +999,11 @@ fun TerminalWithAccessibility(
 
                         when (gestureType) {
                             GestureType.Scroll -> {
+                                // Sync scrollOffset from drag position before fling
+                                coroutineScope.launch {
+                                    scrollOffset.snapTo(dragScrollOffset)
+                                }
+
                                 // Apply fling animation
                                 val velocity = velocityTracker.calculateVelocity()
                                 coroutineScope.launch {
@@ -940,6 +1027,9 @@ fun TerminalWithAccessibility(
                                         scrollOffset.snapTo(maxScroll)
                                         screenState.scrollToTop()
                                     }
+
+                                    // Clear user scrolling flag after fling completes
+                                    isUserScrolling = false
                                 }
                             }
 
@@ -990,7 +1080,8 @@ fun TerminalWithAccessibility(
                         // Hide Canvas from accessibility tree - AccessibilityOverlay provides semantic structure
                     }
                     .graphicsLayer {
-                        translationX = zoomOffset.x * zoomScale
+                        // Apply horizontal pan offset (for virtual width) plus zoom offset
+                        translationX = zoomOffset.x * zoomScale - horizontalPanOffset
                         translationY = zoomOffset.y * zoomScale
                         scaleX = zoomScale
                         scaleY = zoomScale
@@ -1126,6 +1217,17 @@ fun TerminalWithAccessibility(
                     }
                 }
             }
+        }
+
+        // Horizontal scroll indicator (for virtual width)
+        if (isHorizontalPanEnabled) {
+            HorizontalScrollIndicator(
+                scrollFraction = if (maxHorizontalPan > 0f) horizontalPanOffset / maxHorizontalPan else 0f,
+                viewportFraction = availableWidth.toFloat() / terminalWidthPx,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = horizontalScrollIndicatorBottomOffset)
+            )
         }
 
         // Hidden AndroidView with custom InputConnection for IME (software keyboard) input
@@ -1623,3 +1725,57 @@ private fun findOptimalFontSize(
 
 private fun charsPerDimension(pixels: Int, charPixels: Float) =
     (pixels / charPixels).toInt().coerceAtLeast(1)
+
+/**
+ * A thin horizontal scrollbar indicator showing the current horizontal pan position.
+ * This is visual only and not interactive.
+ *
+ * @param scrollFraction Current scroll position as fraction (0.0 = left, 1.0 = right)
+ * @param viewportFraction Visible portion as fraction of total width (0.0 to 1.0)
+ * @param modifier Modifier for positioning
+ */
+@Composable
+private fun HorizontalScrollIndicator(
+    scrollFraction: Float,
+    viewportFraction: Float,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+
+    // Thumb width as fraction of track
+    val thumbWidthFraction = viewportFraction.coerceIn(SCROLL_INDICATOR_MIN_THUMB_FRACTION, 1f)
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(HORIZONTAL_SCROLL_INDICATOR_HEIGHT)
+            .padding(horizontal = HORIZONTAL_SCROLL_INDICATOR_PADDING)
+    ) {
+        val trackWidthPx = constraints.maxWidth.toFloat()
+        val thumbWidthPx = trackWidthPx * thumbWidthFraction
+        val availableTravelPx = trackWidthPx - thumbWidthPx
+        val thumbOffsetPx = scrollFraction * availableTravelPx
+
+        // Track background
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Color.Gray.copy(alpha = SCROLL_INDICATOR_TRACK_ALPHA),
+                    RoundedCornerShape(2.dp)
+                )
+        )
+
+        // Thumb - positioned with offset
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(with(density) { thumbWidthPx.toDp() })
+                .offset { IntOffset(x = thumbOffsetPx.toInt(), y = 0) }
+                .background(
+                    Color.Gray.copy(alpha = SCROLL_INDICATOR_THUMB_ALPHA),
+                    RoundedCornerShape(2.dp)
+                )
+        )
+    }
+}
