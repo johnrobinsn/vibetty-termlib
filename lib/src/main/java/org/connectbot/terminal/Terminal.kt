@@ -421,6 +421,9 @@ fun TerminalWithAccessibility(
     // Flag to prevent scroll sync feedback loop during user drag
     var isUserScrolling by remember(terminalEmulator) { mutableStateOf(false) }
 
+    // Generation counter to track current gesture - prevents stale fling completions from affecting new gestures
+    var scrollGestureGeneration by remember(terminalEmulator) { mutableStateOf(0) }
+
     // Magnifying glass state
     var showMagnifier by remember(terminalEmulator) { mutableStateOf(false) }
     var magnifierPosition by remember(terminalEmulator) { mutableStateOf(Offset.Zero) }
@@ -623,6 +626,7 @@ fun TerminalWithAccessibility(
     // Setup keyboard input callback to reset scroll position
     LaunchedEffect(screenState, scrollOffset) {
         keyboardHandler.onInputProcessed = {
+            Log.d("Terminal", "KEYBOARD INPUT: scrolling to bottom from scrollbackPos=${screenState.scrollbackPosition}")
             screenState.scrollToBottom()
             coroutineScope.launch {
                 scrollOffset.snapTo(0f)
@@ -730,21 +734,18 @@ fun TerminalWithAccessibility(
         val newRows =
             forcedSize?.first ?: charsPerDimension(availableHeight, baseCharHeight)
 
-        // Auto-scroll to bottom when new content arrives (if not manually scrolled)
-        // Only triggers when lines/scrollback size changes AND user was at bottom AND not currently scrolling
-        val wasAtBottom = screenState.scrollbackPosition == 0
-        LaunchedEffect(screenState.snapshot.lines.size, screenState.snapshot.scrollback.size, isUserScrolling) {
-            // Never auto-scroll during user interaction
-            if (isUserScrolling) return@LaunchedEffect
-            // Only auto-scroll if user was already at bottom
-            if (wasAtBottom && screenState.scrollbackPosition != 0) {
-                screenState.scrollToBottom()
-                scrollOffset.snapTo(0f)
-            }
+        // Auto-scroll to bottom when new content arrives (if user is at bottom)
+        // Key only on content size changes - NOT on isUserScrolling to avoid re-running when gesture ends
+        LaunchedEffect(screenState.snapshot.lines.size, screenState.snapshot.scrollback.size) {
+            // Don't auto-scroll during user interaction or if user has scrolled up
+            if (isUserScrolling || screenState.scrollbackPosition != 0) return@LaunchedEffect
+            // User is at bottom and new content arrived - stay at bottom
+            // (scrollbackPosition is already 0, so nothing to do)
         }
 
         // Sync scrollOffset when scrollbackPosition changes externally (but not during user scrolling)
-        LaunchedEffect(screenState.scrollbackPosition, isUserScrolling) {
+        // Key only on scrollbackPosition - NOT on isUserScrolling to avoid re-running when gesture ends
+        LaunchedEffect(screenState.scrollbackPosition) {
             // Skip sync during user drag to prevent feedback loop
             if (isUserScrolling) return@LaunchedEffect
 
@@ -769,23 +770,10 @@ fun TerminalWithAccessibility(
             }
         }
 
-        // Auto-pan horizontally when cursor moves to keep it visible
-        LaunchedEffect(screenState.snapshot.cursorCol) {
-            // Only auto-pan when at bottom (viewing current screen) and not scrolling
-            if (!isHorizontalPanEnabled || screenState.scrollbackPosition != 0 || isUserScrolling) {
-                return@LaunchedEffect
-            }
-
-            val cursorPixelX = screenState.snapshot.cursorCol * baseCharWidth
-            val visibleRight = horizontalPanOffset + availableWidth
-
-            if (cursorPixelX + baseCharWidth > visibleRight) {
-                horizontalPanOffset = (cursorPixelX + baseCharWidth - availableWidth + baseCharWidth)
-                    .coerceIn(0f, maxHorizontalPan)
-            } else if (cursorPixelX < horizontalPanOffset) {
-                horizontalPanOffset = (cursorPixelX - baseCharWidth).coerceAtLeast(0f)
-            }
-        }
+        // Note: Horizontal auto-pan is disabled because TUI applications often park the cursor
+        // at a fixed position (e.g., column 0) while rendering input text elsewhere using
+        // escape sequences. This makes cursor-based auto-pan unreliable.
+        // Users can manually pan horizontally using single-finger drag.
 
         // Draw terminal content with context menu overlay
         Box(
@@ -809,6 +797,8 @@ fun TerminalWithAccessibility(
                     awaitEachGesture {
                         var gestureType: GestureType = GestureType.Undetermined
                         var currentScrollOffset = 0f  // Local tracking during drag (avoids async issues)
+                        var thisGestureGeneration = 0  // Tracks which generation this gesture belongs to
+                        var gestureMaxScroll = 0f  // Will be set when entering scroll mode
                         val down = awaitFirstDown(requireUnconsumed = false)
 
                         // 1. Check if touching a selection handle first
@@ -945,9 +935,15 @@ fun TerminalWithAccessibility(
                                     // Movement exceeded touch slop - this is a scroll gesture
                                     gestureType = GestureType.Scroll
                                     isUserScrolling = true
+                                    scrollGestureGeneration++  // Increment to invalidate any pending fling completions
+                                    thisGestureGeneration = scrollGestureGeneration
+                                    // Capture maxScroll NOW when entering scroll mode (not at gesture start)
+                                    // This ensures we use the scrollback size at the moment scrolling begins
+                                    gestureMaxScroll = screenState.snapshot.scrollback.size * baseCharHeight
                                     // Initialize local scroll tracking from current position only
                                     // Don't add totalOffset.y here - let the scroll handler add dragAmount.y
                                     currentScrollOffset = screenState.scrollbackPosition * baseCharHeight
+                                    Log.d("Terminal", "SCROLL START: gen=$thisGestureGeneration, scrollbackPos=${screenState.scrollbackPosition}, currentScrollOffset=$currentScrollOffset, gestureMaxScroll=$gestureMaxScroll, totalOffset=$totalOffset")
                                     // Apply initial horizontal offset
                                     if (isHorizontalPanEnabled) {
                                         horizontalPanOffset = (horizontalPanOffset - totalOffset.x)
@@ -1002,16 +998,21 @@ fun TerminalWithAccessibility(
                                     // Mark that user is scrolling to prevent sync feedback
                                     isUserScrolling = true
 
-                                    // Update local scroll tracking (avoids async issues with Animatable)
-                                    // Drag up (negative dragAmount.y) = view newer content = decrease scrollback
-                                    // Drag down (positive dragAmount.y) = view older content = increase scrollback
-                                    currentScrollOffset = (currentScrollOffset + dragAmount.y)
-                                        .coerceIn(0f, maxScroll)
+                                    // Only update vertical scroll if there's meaningful vertical movement
+                                    // This prevents horizontal panning from accidentally affecting scroll position
+                                    if (kotlin.math.abs(dragAmount.y) > 0.5f) {
+                                        // Update local scroll tracking (avoids async issues with Animatable)
+                                        // Drag up (negative dragAmount.y) = view newer content = decrease scrollback
+                                        // Drag down (positive dragAmount.y) = view older content = increase scrollback
+                                        // Use gestureMaxScroll (captured at gesture start) to avoid mid-gesture changes from TUI output
+                                        currentScrollOffset = (currentScrollOffset + dragAmount.y)
+                                            .coerceIn(0f, gestureMaxScroll)
 
-                                    // Update terminal buffer scrollback position
-                                    val scrolledLines = (currentScrollOffset / baseCharHeight).toInt()
-                                    if (scrolledLines != screenState.scrollbackPosition) {
-                                        screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+                                        // Update terminal buffer scrollback position
+                                        val scrolledLines = (currentScrollOffset / baseCharHeight).toInt()
+                                        if (scrolledLines != screenState.scrollbackPosition) {
+                                            screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+                                        }
                                     }
 
                                     // Update horizontal pan offset (if virtual width enabled)
@@ -1038,8 +1039,13 @@ fun TerminalWithAccessibility(
                                 val hasVerticalIntent = kotlin.math.abs(velocity.y) > kotlin.math.abs(velocity.x) ||
                                     kotlin.math.abs(velocity.y) > 100f
 
+                                Log.d("Terminal", "SCROLL END: gen=$thisGestureGeneration, scrollbackPos=${screenState.scrollbackPosition}, currentScrollOffset=$currentScrollOffset, velocity=$velocity, hasVerticalIntent=$hasVerticalIntent, gestureMaxScroll=$gestureMaxScroll")
+
+                                val gestureGen = thisGestureGeneration  // Capture for coroutine
+                                val flingMaxScroll = gestureMaxScroll  // Capture maxScroll from gesture start
                                 coroutineScope.launch {
                                     // Sync scrollOffset from local tracking before fling
+                                    Log.d("Terminal", "SCROLL FLING: gen=$gestureGen, snapping scrollOffset to $currentScrollOffset")
                                     scrollOffset.snapTo(currentScrollOffset)
 
                                     if (hasVerticalIntent) {
@@ -1055,18 +1061,25 @@ fun TerminalWithAccessibility(
                                             screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
                                         }
 
-                                        // Clamp final position if needed
+                                        // Clamp final position if needed (use flingMaxScroll captured at gesture start)
                                         if (targetValue < 0f) {
+                                            Log.d("Terminal", "FLING CLAMP: targetValue=$targetValue < 0, scrolling to bottom")
                                             scrollOffset.snapTo(0f)
                                             screenState.scrollToBottom()
-                                        } else if (targetValue > maxScroll) {
-                                            scrollOffset.snapTo(maxScroll)
+                                        } else if (targetValue > flingMaxScroll) {
+                                            Log.d("Terminal", "FLING CLAMP: targetValue=$targetValue > flingMaxScroll=$flingMaxScroll, scrolling to top")
+                                            scrollOffset.snapTo(flingMaxScroll)
                                             screenState.scrollToTop()
                                         }
                                     }
 
-                                    // Clear user scrolling flag after fling completes
-                                    isUserScrolling = false
+                                    // Clear user scrolling flag after fling completes - but only if this is still the current gesture
+                                    if (gestureGen == scrollGestureGeneration) {
+                                        Log.d("Terminal", "SCROLL COMPLETE: gen=$gestureGen, setting isUserScrolling=false, scrollbackPos=${screenState.scrollbackPosition}")
+                                        isUserScrolling = false
+                                    } else {
+                                        Log.d("Terminal", "SCROLL COMPLETE: gen=$gestureGen STALE (current=$scrollGestureGeneration), not clearing isUserScrolling")
+                                    }
                                 }
                             }
 
