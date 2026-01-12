@@ -1088,10 +1088,14 @@ fun TerminalWithAccessibility(
                         transformOrigin = zoomOrigin
                     }
             ) {
-                // Fill background
+                // Fill background - use full terminal width when virtual width is enabled
                 drawRect(
                     color = backgroundColor,
-                    size = size
+                    size = if (isHorizontalPanEnabled) {
+                        Size(terminalWidthPx, size.height)
+                    } else {
+                        size
+                    }
                 )
 
                 // Draw each line (zoom/pan applied via graphicsLayer)
