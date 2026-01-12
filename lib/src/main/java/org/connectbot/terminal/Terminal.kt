@@ -418,6 +418,9 @@ fun TerminalWithAccessibility(
     // Horizontal pan state for virtual width
     var horizontalPanOffset by remember(terminalEmulator) { mutableStateOf(0f) }
 
+    // Callback to auto-pan horizontally when typing (set after layout calculations)
+    var autoPanToCaretCallback by remember(terminalEmulator) { mutableStateOf<(() -> Unit)?>(null) }
+
     // Flag to prevent scroll sync feedback loop during user drag
     var isUserScrolling by remember(terminalEmulator) { mutableStateOf(false) }
 
@@ -620,13 +623,15 @@ fun TerminalWithAccessibility(
     // Coroutine scope for animations
     val coroutineScope = rememberCoroutineScope()
 
-    // Setup keyboard input callback to reset scroll position
+    // Setup keyboard input callback to reset scroll position and auto-pan horizontally
     LaunchedEffect(screenState, scrollOffset) {
         keyboardHandler.onInputProcessed = {
             screenState.scrollToBottom()
             coroutineScope.launch {
                 scrollOffset.snapTo(0f)
             }
+            // Auto-pan horizontally to keep cursor visible when typing
+            autoPanToCaretCallback?.invoke()
         }
     }
     val viewConfiguration = LocalViewConfiguration.current
@@ -766,6 +771,25 @@ fun TerminalWithAccessibility(
         LaunchedEffect(maxHorizontalPan) {
             if (horizontalPanOffset > maxHorizontalPan) {
                 horizontalPanOffset = maxHorizontalPan
+            }
+        }
+
+        // Set up auto-pan callback for keyboard input (only when horizontal panning is enabled)
+        // This is invoked by keyboardHandler.onInputProcessed when user types
+        LaunchedEffect(isHorizontalPanEnabled, baseCharWidth, availableWidth, maxHorizontalPan) {
+            autoPanToCaretCallback = if (isHorizontalPanEnabled) {
+                {
+                    val cursorPixelX = screenState.snapshot.cursorCol * baseCharWidth
+                    val visibleRight = horizontalPanOffset + availableWidth
+                    if (cursorPixelX + baseCharWidth > visibleRight) {
+                        horizontalPanOffset = (cursorPixelX + baseCharWidth - availableWidth + baseCharWidth)
+                            .coerceIn(0f, maxHorizontalPan)
+                    } else if (cursorPixelX < horizontalPanOffset) {
+                        horizontalPanOffset = (cursorPixelX - baseCharWidth).coerceAtLeast(0f)
+                    }
+                }
+            } else {
+                null
             }
         }
 
@@ -1018,31 +1042,37 @@ fun TerminalWithAccessibility(
 
                         when (gestureType) {
                             GestureType.Scroll -> {
-                                // Apply fling animation (use currentScrollOffset as starting point)
                                 val velocity = velocityTracker.calculateVelocity()
+                                // Only apply vertical fling if gesture had significant vertical component
+                                // This prevents horizontal panning from accidentally triggering vertical scroll
+                                val hasVerticalIntent = kotlin.math.abs(velocity.y) > kotlin.math.abs(velocity.x) ||
+                                    kotlin.math.abs(velocity.y) > 100f
+
                                 coroutineScope.launch {
                                     // Sync scrollOffset from local tracking before fling
                                     scrollOffset.snapTo(currentScrollOffset)
 
-                                    var targetValue = currentScrollOffset
-                                    scrollOffset.animateDecay(
-                                        initialVelocity = velocity.y,
-                                        animationSpec = splineBasedDecay(density)
-                                    ) {
-                                        targetValue = value
-                                        // Update terminal buffer during animation
-                                        val scrolledLines =
-                                            (value / baseCharHeight).toInt()
-                                        screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
-                                    }
+                                    if (hasVerticalIntent) {
+                                        var targetValue = currentScrollOffset
+                                        scrollOffset.animateDecay(
+                                            initialVelocity = velocity.y,
+                                            animationSpec = splineBasedDecay(density)
+                                        ) {
+                                            targetValue = value
+                                            // Update terminal buffer during animation
+                                            val scrolledLines =
+                                                (value / baseCharHeight).toInt()
+                                            screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+                                        }
 
-                                    // Clamp final position if needed
-                                    if (targetValue < 0f) {
-                                        scrollOffset.snapTo(0f)
-                                        screenState.scrollToBottom()
-                                    } else if (targetValue > maxScroll) {
-                                        scrollOffset.snapTo(maxScroll)
-                                        screenState.scrollToTop()
+                                        // Clamp final position if needed
+                                        if (targetValue < 0f) {
+                                            scrollOffset.snapTo(0f)
+                                            screenState.scrollToBottom()
+                                        } else if (targetValue > maxScroll) {
+                                            scrollOffset.snapTo(maxScroll)
+                                            screenState.scrollToTop()
+                                        }
                                     }
 
                                     // Clear user scrolling flag after fling completes
