@@ -1,3 +1,14 @@
+> **Experimental Fork**
+>
+> This is an experimental fork of ConnectBot Terminal that adds virtual terminal width support:
+>
+> - **Virtual Width Rendering**: Terminal can render wider than the physical screen (e.g., 120 columns on a narrow phone)
+> - **Horizontal Panning**: Single-finger drag for both vertical scroll and horizontal pan
+> - **Auto-pan to Cursor**: Automatically pans horizontally to keep cursor visible when typing
+> - **Long-press Text Selection**: Works correctly with horizontal pan offset
+>
+> Used by [johnrobinsn/connectbot](https://github.com/johnrobinsn/connectbot) experimental fork.
+
 # ConnectBot Terminal
 
 This is the future ConnectBot Terminal Compose component that displays a
