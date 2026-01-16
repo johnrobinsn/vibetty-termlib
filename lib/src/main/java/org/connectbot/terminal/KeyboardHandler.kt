@@ -47,7 +47,8 @@ internal class KeyboardHandler(
     private val terminalEmulator: TerminalEmulator,
     var modifierManager: ModifierManager? = null,
     var selectionController: SelectionController? = null,
-    var onInputProcessed: (() -> Unit)? = null
+    var onInputProcessed: (() -> Unit)? = null,
+    var onPanJumpRequest: ((toRight: Boolean) -> Unit)? = null
 ) {
 
     /**
@@ -63,6 +64,20 @@ internal class KeyboardHandler(
         val ctrl = event.isCtrlPressed
         val alt = event.isAltPressed
         val shift = event.isShiftPressed
+
+        // Handle Ctrl+Alt+Arrow for horizontal pan jump
+        if (ctrl && alt) {
+            when (key) {
+                Key.DirectionLeft -> {
+                    onPanJumpRequest?.invoke(false)
+                    return true
+                }
+                Key.DirectionRight -> {
+                    onPanJumpRequest?.invoke(true)
+                    return true
+                }
+            }
+        }
 
         // If selection is active, intercept arrow keys for selection movement
         val selection = selectionController

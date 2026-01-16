@@ -56,6 +56,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -417,6 +418,7 @@ fun TerminalWithAccessibility(
 
     // Horizontal pan state for virtual width
     var horizontalPanOffset by remember(terminalEmulator) { mutableStateOf(0f) }
+    var maxHorizontalPan by remember(terminalEmulator) { mutableStateOf(0f) }
 
     // Flag to prevent scroll sync feedback loop during user drag
     var isUserScrolling by remember(terminalEmulator) { mutableStateOf(false) }
@@ -633,6 +635,14 @@ fun TerminalWithAccessibility(
             }
         }
     }
+
+    // Setup pan jump callback for Ctrl+Alt+Arrow (hardware keyboard)
+    SideEffect {
+        keyboardHandler.onPanJumpRequest = { toRight ->
+            horizontalPanOffset = if (toRight) maxHorizontalPan else 0f
+        }
+    }
+
     val viewConfiguration = LocalViewConfiguration.current
 
     var availableWidth by remember { mutableStateOf(0) }
@@ -762,13 +772,18 @@ fun TerminalWithAccessibility(
         val terminalHeightPx = newRows * baseCharHeight
 
         // Calculate max horizontal pan offset (only used when virtualWidthColumns is set)
-        val maxHorizontalPan = (terminalWidthPx - availableWidth).coerceAtLeast(0f)
-        val isHorizontalPanEnabled = virtualWidthColumns != null && maxHorizontalPan > 0f
+        val calculatedMaxPan = (terminalWidthPx - availableWidth).coerceAtLeast(0f)
+        val isHorizontalPanEnabled = virtualWidthColumns != null && calculatedMaxPan > 0f
+
+        // Update maxHorizontalPan state synchronously so key events can access it
+        if (maxHorizontalPan != calculatedMaxPan) {
+            maxHorizontalPan = calculatedMaxPan
+        }
 
         // Clamp horizontal pan offset when maxHorizontalPan changes (e.g., due to font size change)
-        LaunchedEffect(maxHorizontalPan) {
-            if (horizontalPanOffset > maxHorizontalPan) {
-                horizontalPanOffset = maxHorizontalPan
+        LaunchedEffect(calculatedMaxPan) {
+            if (horizontalPanOffset > calculatedMaxPan) {
+                horizontalPanOffset = calculatedMaxPan
             }
         }
 
