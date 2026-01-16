@@ -713,10 +713,11 @@ fun TerminalWithAccessibility(
             }
 
             // Use base dimensions for terminal sizing (not zoomed dimensions)
-            // If virtualWidthColumns is set, use that for columns (allows wider than screen)
+            // Use the larger of virtualWidthColumns and physical width (virtual is a minimum, not a cap)
+            val physicalCols = charsPerDimension(availableWidth, baseCharWidth)
             val newCols = forcedSize?.second
-                ?: virtualWidthColumns
-                ?: charsPerDimension(availableWidth, baseCharWidth)
+                ?: virtualWidthColumns?.let { maxOf(it, physicalCols) }
+                ?: physicalCols
             val newRows =
                 forcedSize?.first ?: charsPerDimension(availableHeight, baseCharHeight)
 
@@ -727,10 +728,11 @@ fun TerminalWithAccessibility(
         }
 
         // Use base dimensions for terminal sizing (not zoomed dimensions)
-        // If virtualWidthColumns is set, use that for columns (allows wider than screen)
+        // Use the larger of virtualWidthColumns and physical width (virtual is a minimum, not a cap)
+        val physicalCols = charsPerDimension(availableWidth, baseCharWidth)
         val newCols = forcedSize?.second
-            ?: virtualWidthColumns
-            ?: charsPerDimension(availableWidth, baseCharWidth)
+            ?: virtualWidthColumns?.let { maxOf(it, physicalCols) }
+            ?: physicalCols
         val newRows =
             forcedSize?.first ?: charsPerDimension(availableHeight, baseCharHeight)
 
