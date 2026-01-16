@@ -48,22 +48,37 @@ internal class KeyboardHandler(
     var modifierManager: ModifierManager? = null,
     var selectionController: SelectionController? = null,
     var onInputProcessed: (() -> Unit)? = null,
-    var onPanJumpRequest: ((toRight: Boolean) -> Unit)? = null
+    var onPanJumpRequest: ((toRight: Boolean) -> Unit)? = null,
+    var backtickAsEscape: Boolean = false
 ) {
+    /**
+     * Long press threshold in milliseconds for backtick-to-Escape remapping.
+     */
+    private val BACKTICK_LONG_PRESS_THRESHOLD_MS = 500L
+
+    /**
+     * Timestamp when backtick key was pressed down, or null if not pressed.
+     */
+    private var backtickDownTime: Long? = null
 
     /**
      * Process a Compose KeyEvent and send to terminal.
      * Returns true if the event was handled.
      */
     fun onKeyEvent(event: ComposeKeyEvent): Boolean {
-        if (event.type != KeyEventType.KeyDown) {
-            return false
-        }
-
         val key = event.key
         val ctrl = event.isCtrlPressed
         val alt = event.isAltPressed
         val shift = event.isShiftPressed
+
+        // Handle backtick-to-Escape remapping (hardware keyboard only)
+        if (backtickAsEscape && key == Key.Grave && !ctrl && !alt) {
+            return handleBacktickAsEscape(event, shift)
+        }
+
+        if (event.type != KeyEventType.KeyDown) {
+            return false
+        }
 
         // Handle Ctrl+Alt+Arrow for horizontal pan jump
         if (ctrl && alt) {
@@ -150,6 +165,51 @@ internal class KeyboardHandler(
         }
 
         return false
+    }
+
+    /**
+     * Handle backtick key with Escape remapping.
+     * Short press (<500ms) sends Escape, long press (>=500ms) sends backtick.
+     * Shift+backtick always sends tilde (~).
+     */
+    private fun handleBacktickAsEscape(event: ComposeKeyEvent, shift: Boolean): Boolean {
+        when (event.type) {
+            KeyEventType.KeyDown -> {
+                // Only record the FIRST press time, ignore key repeats
+                if (backtickDownTime == null) {
+                    backtickDownTime = System.currentTimeMillis()
+                }
+                return true
+            }
+            KeyEventType.KeyUp -> {
+                val downTime = backtickDownTime
+                backtickDownTime = null
+
+                if (downTime == null) {
+                    // Key up without a recorded key down, ignore
+                    return true
+                }
+
+                val elapsed = System.currentTimeMillis() - downTime
+                val modifiers = buildModifierMask(false, false, shift)
+
+                if (shift) {
+                    // Shift+backtick always sends tilde (~)
+                    terminalEmulator.dispatchCharacter(modifiers, '~')
+                } else if (elapsed < BACKTICK_LONG_PRESS_THRESHOLD_MS) {
+                    // Short press: send Escape
+                    terminalEmulator.dispatchKey(0, VTermKey.ESCAPE)
+                } else {
+                    // Long press: send backtick
+                    terminalEmulator.dispatchCharacter(0, '`')
+                }
+
+                modifierManager?.clearTransients()
+                onInputProcessed?.invoke()
+                return true
+            }
+            else -> return false
+        }
     }
 
     /**

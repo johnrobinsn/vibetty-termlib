@@ -328,7 +328,8 @@ fun Terminal(
     onSelectionControllerAvailable: ((SelectionController) -> Unit)? = null,
     onHyperlinkClick: (String) -> Unit = {},
     virtualWidthColumns: Int? = null,
-    horizontalScrollIndicatorBottomOffset: Dp = 0.dp
+    horizontalScrollIndicatorBottomOffset: Dp = 0.dp,
+    backtickAsEscape: Boolean = false
 ) {
     TerminalWithAccessibility(
         terminalEmulator = terminalEmulator,
@@ -349,7 +350,8 @@ fun Terminal(
         onSelectionControllerAvailable = onSelectionControllerAvailable,
         onHyperlinkClick = onHyperlinkClick,
         virtualWidthColumns = virtualWidthColumns,
-        horizontalScrollIndicatorBottomOffset = horizontalScrollIndicatorBottomOffset
+        horizontalScrollIndicatorBottomOffset = horizontalScrollIndicatorBottomOffset,
+        backtickAsEscape = backtickAsEscape
     )
 }
 
@@ -380,7 +382,8 @@ fun TerminalWithAccessibility(
     onSelectionControllerAvailable: ((SelectionController) -> Unit)? = null,
     onHyperlinkClick: (String) -> Unit = {},
     virtualWidthColumns: Int? = null,
-    horizontalScrollIndicatorBottomOffset: Dp = 0.dp
+    horizontalScrollIndicatorBottomOffset: Dp = 0.dp,
+    backtickAsEscape: Boolean = false
 ) {
     if (terminalEmulator !is TerminalEmulatorImpl) {
         Box(
@@ -641,6 +644,11 @@ fun TerminalWithAccessibility(
         keyboardHandler.onPanJumpRequest = { toRight ->
             horizontalPanOffset = if (toRight) maxHorizontalPan else 0f
         }
+    }
+
+    // Update backtick-to-Escape setting for hardware keyboard
+    SideEffect {
+        keyboardHandler.backtickAsEscape = backtickAsEscape
     }
 
     val viewConfiguration = LocalViewConfiguration.current
