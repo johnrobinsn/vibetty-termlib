@@ -307,6 +307,10 @@ private const val DOUBLE_UNDERLINE_SPACING = 2f
  *                            and single-finger horizontal drag pans the view. Height is still calculated
  *                            from available space. When null (default), terminal sizes to available width.
  * @param horizontalScrollIndicatorBottomOffset Offset from the bottom for the horizontal scroll indicator.
+ * @param onMouseClick Callback when user taps on terminal and mouse mode is enabled. Receives row, col (0-indexed), and button (0=left).
+ * @param onMouseScroll Callback when user drags vertically and mouse mode is enabled. Receives row, col (0-indexed), and scrollUp (true=up, false=down).
+ * @param onShowKeyboardPanel Callback when user swipes up from bottom of screen to show keyboard panel.
+ * @param onHideKeyboardPanel Callback when user swipes down from top of screen to hide keyboard panel.
  */
 @Composable
 fun Terminal(
@@ -329,7 +333,12 @@ fun Terminal(
     onHyperlinkClick: (String) -> Unit = {},
     virtualWidthColumns: Int? = null,
     horizontalScrollIndicatorBottomOffset: Dp = 0.dp,
-    backtickAsEscape: Boolean = false
+    backtickAsEscape: Boolean = false,
+    enableComposingOverlay: Boolean = false,
+    onMouseClick: ((row: Int, col: Int, button: Int) -> Unit)? = null,
+    onMouseScroll: ((row: Int, col: Int, scrollUp: Boolean) -> Unit)? = null,
+    onShowKeyboardPanel: () -> Unit = {},
+    onHideKeyboardPanel: () -> Unit = {}
 ) {
     TerminalWithAccessibility(
         terminalEmulator = terminalEmulator,
@@ -351,7 +360,12 @@ fun Terminal(
         onHyperlinkClick = onHyperlinkClick,
         virtualWidthColumns = virtualWidthColumns,
         horizontalScrollIndicatorBottomOffset = horizontalScrollIndicatorBottomOffset,
-        backtickAsEscape = backtickAsEscape
+        backtickAsEscape = backtickAsEscape,
+        enableComposingOverlay = enableComposingOverlay,
+        onMouseClick = onMouseClick,
+        onMouseScroll = onMouseScroll,
+        onShowKeyboardPanel = onShowKeyboardPanel,
+        onHideKeyboardPanel = onHideKeyboardPanel
     )
 }
 
@@ -383,7 +397,12 @@ fun TerminalWithAccessibility(
     onHyperlinkClick: (String) -> Unit = {},
     virtualWidthColumns: Int? = null,
     horizontalScrollIndicatorBottomOffset: Dp = 0.dp,
-    backtickAsEscape: Boolean = false
+    backtickAsEscape: Boolean = false,
+    enableComposingOverlay: Boolean = false,
+    onMouseClick: ((row: Int, col: Int, button: Int) -> Unit)? = null,
+    onMouseScroll: ((row: Int, col: Int, scrollUp: Boolean) -> Unit)? = null,
+    onShowKeyboardPanel: () -> Unit = {},
+    onHideKeyboardPanel: () -> Unit = {}
 ) {
     if (terminalEmulator !is TerminalEmulatorImpl) {
         Box(
@@ -451,6 +470,23 @@ fun TerminalWithAccessibility(
 
     // Keep reference to ImeInputView for controlling IME
     var imeInputView by remember { mutableStateOf<ImeInputView?>(null) }
+
+    // Composing text overlay state (for voice input)
+    var composingText by remember(terminalEmulator) { mutableStateOf<String?>(null) }
+    var showComposingOverlay by remember(terminalEmulator) { mutableStateOf(false) }
+
+    // Delayed overlay visibility - only show if composing continues for >300ms
+    // This skips quick swipe gestures but catches voice input
+    LaunchedEffect(composingText, enableComposingOverlay) {
+        if (composingText != null && enableComposingOverlay) {
+            delay(300L) // Wait 300ms before showing
+            if (composingText != null) {
+                showComposingOverlay = true
+            }
+        } else {
+            showComposingOverlay = false
+        }
+    }
 
     // Cleanup IME when component is disposed
     DisposableEffect(imeInputView) {
@@ -825,6 +861,8 @@ fun TerminalWithAccessibility(
                         var thisGestureGeneration = 0  // Tracks which generation this gesture belongs to
                         var gestureMaxScroll = 0f  // Will be set when entering scroll mode
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        var lastDragPosition = down.position  // Track last position for swipe-up detection
+                        var mouseScrollAccumulator = 0f  // Accumulate drag for mouse wheel events
 
                         // 1. Check if touching a selection handle first
                         if (selectionManager.mode != SelectionMode.NONE && !selectionManager.isSelecting) {
@@ -1026,17 +1064,40 @@ fun TerminalWithAccessibility(
                                     // Only update vertical scroll if there's meaningful vertical movement
                                     // This prevents horizontal panning from accidentally affecting scroll position
                                     if (kotlin.math.abs(dragAmount.y) > 0.5f) {
-                                        // Update local scroll tracking (avoids async issues with Animatable)
-                                        // Drag up (negative dragAmount.y) = view newer content = decrease scrollback
-                                        // Drag down (positive dragAmount.y) = view older content = increase scrollback
-                                        // Use gestureMaxScroll (captured at gesture start) to avoid mid-gesture changes from TUI output
-                                        currentScrollOffset = (currentScrollOffset + dragAmount.y)
-                                            .coerceIn(0f, gestureMaxScroll)
+                                        if (onMouseScroll != null) {
+                                            // Mouse mode: send mouse wheel events instead of scrollback
+                                            // Accumulate drag and fire scroll events per line of movement
+                                            mouseScrollAccumulator += dragAmount.y
+                                            val scrollLines = (mouseScrollAccumulator / baseCharHeight).toInt()
+                                            if (scrollLines != 0) {
+                                                // Calculate position for scroll event (use current drag position)
+                                                val adjustedX = change.position.x + horizontalPanOffset
+                                                val scrollCol = (adjustedX / baseCharWidth).toInt()
+                                                    .coerceIn(0, screenState.snapshot.cols - 1)
+                                                val scrollRow = (change.position.y / baseCharHeight).toInt()
+                                                    .coerceIn(0, screenState.snapshot.rows - 1)
+                                                // Invert direction: drag down = scroll up, drag up = scroll down
+                                                // (matches natural scrolling - drag down to see content above)
+                                                val scrollUp = scrollLines > 0
+                                                repeat(kotlin.math.abs(scrollLines)) {
+                                                    onMouseScroll(scrollRow, scrollCol, scrollUp)
+                                                }
+                                                mouseScrollAccumulator -= scrollLines * baseCharHeight
+                                            }
+                                        } else {
+                                            // Normal mode: scroll terminal buffer
+                                            // Update local scroll tracking (avoids async issues with Animatable)
+                                            // Drag up (negative dragAmount.y) = view newer content = decrease scrollback
+                                            // Drag down (positive dragAmount.y) = view older content = increase scrollback
+                                            // Use gestureMaxScroll (captured at gesture start) to avoid mid-gesture changes from TUI output
+                                            currentScrollOffset = (currentScrollOffset + dragAmount.y)
+                                                .coerceIn(0f, gestureMaxScroll)
 
-                                        // Update terminal buffer scrollback position
-                                        val scrolledLines = (currentScrollOffset / baseCharHeight).toInt()
-                                        if (scrolledLines != screenState.scrollbackPosition) {
-                                            screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+                                            // Update terminal buffer scrollback position
+                                            val scrolledLines = (currentScrollOffset / baseCharHeight).toInt()
+                                            if (scrolledLines != screenState.scrollbackPosition) {
+                                                screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+                                            }
                                         }
                                     }
 
@@ -1052,12 +1113,31 @@ fun TerminalWithAccessibility(
                                 else -> {}
                             }
 
+                            lastDragPosition = change.position
                             change.consume()
                         }
 
                         // 6. Gesture ended - cleanup
                         when (gestureType) {
                             GestureType.Scroll -> {
+                                // Detect swipe up from bottom 30% of screen to show keyboard panel
+                                val isSwipeUpFromBottom = down.position.y > size.height * 0.7f &&
+                                    (down.position.y - lastDragPosition.y) > viewConfiguration.touchSlop * 1.5f
+                                if (isSwipeUpFromBottom) {
+                                    isUserScrolling = false
+                                    onShowKeyboardPanel()
+                                    return@awaitEachGesture
+                                }
+
+                                // Detect swipe down from top 30% of screen to hide keyboard panel
+                                val isSwipeDownFromTop = down.position.y < size.height * 0.3f &&
+                                    (lastDragPosition.y - down.position.y) > viewConfiguration.touchSlop * 1.5f
+                                if (isSwipeDownFromTop) {
+                                    isUserScrolling = false
+                                    onHideKeyboardPanel()
+                                    return@awaitEachGesture
+                                }
+
                                 val velocity = velocityTracker.calculateVelocity()
                                 // Only apply vertical fling if gesture had significant vertical component
                                 // This prevents horizontal panning from accidentally triggering vertical scroll
@@ -1084,44 +1164,50 @@ fun TerminalWithAccessibility(
 
                                 Log.d("Terminal", "SCROLL END: gen=$thisGestureGeneration, scrollbackPos=${screenState.scrollbackPosition}, currentScrollOffset=$currentScrollOffset, velocity=$velocity, hasVerticalIntent=$hasVerticalIntent, gestureMaxScroll=$gestureMaxScroll")
 
-                                val gestureGen = thisGestureGeneration  // Capture for coroutine
-                                val flingMaxScroll = gestureMaxScroll  // Capture maxScroll from gesture start
-                                coroutineScope.launch {
-                                    // Sync scrollOffset from local tracking before fling
-                                    Log.d("Terminal", "SCROLL FLING: gen=$gestureGen, snapping scrollOffset to $currentScrollOffset")
-                                    scrollOffset.snapTo(currentScrollOffset)
+                                // Skip vertical fling animation when mouse scroll mode is enabled
+                                // (vertical drag sends mouse wheel events, not scrollback)
+                                if (onMouseScroll != null) {
+                                    isUserScrolling = false
+                                } else {
+                                    val gestureGen = thisGestureGeneration  // Capture for coroutine
+                                    val flingMaxScroll = gestureMaxScroll  // Capture maxScroll from gesture start
+                                    coroutineScope.launch {
+                                        // Sync scrollOffset from local tracking before fling
+                                        Log.d("Terminal", "SCROLL FLING: gen=$gestureGen, snapping scrollOffset to $currentScrollOffset")
+                                        scrollOffset.snapTo(currentScrollOffset)
 
-                                    if (hasVerticalIntent) {
-                                        var targetValue = currentScrollOffset
-                                        scrollOffset.animateDecay(
-                                            initialVelocity = velocity.y,
-                                            animationSpec = splineBasedDecay(density)
-                                        ) {
-                                            targetValue = value
-                                            // Update terminal buffer during animation
-                                            val scrolledLines =
-                                                (value / baseCharHeight).toInt()
-                                            screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+                                        if (hasVerticalIntent) {
+                                            var targetValue = currentScrollOffset
+                                            scrollOffset.animateDecay(
+                                                initialVelocity = velocity.y,
+                                                animationSpec = splineBasedDecay(density)
+                                            ) {
+                                                targetValue = value
+                                                // Update terminal buffer during animation
+                                                val scrolledLines =
+                                                    (value / baseCharHeight).toInt()
+                                                screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+                                            }
+
+                                            // Clamp final position if needed (use flingMaxScroll captured at gesture start)
+                                            if (targetValue < 0f) {
+                                                Log.d("Terminal", "FLING CLAMP: targetValue=$targetValue < 0, scrolling to bottom")
+                                                scrollOffset.snapTo(0f)
+                                                screenState.scrollToBottom()
+                                            } else if (targetValue > flingMaxScroll) {
+                                                Log.d("Terminal", "FLING CLAMP: targetValue=$targetValue > flingMaxScroll=$flingMaxScroll, scrolling to top")
+                                                scrollOffset.snapTo(flingMaxScroll)
+                                                screenState.scrollToTop()
+                                            }
                                         }
 
-                                        // Clamp final position if needed (use flingMaxScroll captured at gesture start)
-                                        if (targetValue < 0f) {
-                                            Log.d("Terminal", "FLING CLAMP: targetValue=$targetValue < 0, scrolling to bottom")
-                                            scrollOffset.snapTo(0f)
-                                            screenState.scrollToBottom()
-                                        } else if (targetValue > flingMaxScroll) {
-                                            Log.d("Terminal", "FLING CLAMP: targetValue=$targetValue > flingMaxScroll=$flingMaxScroll, scrolling to top")
-                                            scrollOffset.snapTo(flingMaxScroll)
-                                            screenState.scrollToTop()
+                                        // Clear user scrolling flag after fling completes - but only if this is still the current gesture
+                                        if (gestureGen == scrollGestureGeneration) {
+                                            Log.d("Terminal", "SCROLL COMPLETE: gen=$gestureGen, setting isUserScrolling=false, scrollbackPos=${screenState.scrollbackPosition}")
+                                            isUserScrolling = false
+                                        } else {
+                                            Log.d("Terminal", "SCROLL COMPLETE: gen=$gestureGen STALE (current=$scrollGestureGeneration), not clearing isUserScrolling")
                                         }
-                                    }
-
-                                    // Clear user scrolling flag after fling completes - but only if this is still the current gesture
-                                    if (gestureGen == scrollGestureGeneration) {
-                                        Log.d("Terminal", "SCROLL COMPLETE: gen=$gestureGen, setting isUserScrolling=false, scrollbackPos=${screenState.scrollbackPosition}")
-                                        isUserScrolling = false
-                                    } else {
-                                        Log.d("Terminal", "SCROLL COMPLETE: gen=$gestureGen STALE (current=$scrollGestureGeneration), not clearing isUserScrolling")
                                     }
                                 }
                             }
@@ -1135,12 +1221,14 @@ fun TerminalWithAccessibility(
 
                             GestureType.Undetermined -> {
                                 // This is a tap. If a selection is active, clear it.
-                                // Otherwise, check for hyperlink or forward the tap.
+                                // Otherwise, check for hyperlink, mouse click, or forward the tap.
                                 if (selectionManager.mode != SelectionMode.NONE) {
                                     selectionManager.clearSelection()
                                 } else {
                                     // Check if tap is on a hyperlink
-                                    val tapCol = (down.position.x / baseCharWidth).toInt()
+                                    // Apply horizontal pan offset for virtual width
+                                    val adjustedX = down.position.x + horizontalPanOffset
+                                    val tapCol = (adjustedX / baseCharWidth).toInt()
                                         .coerceIn(0, screenState.snapshot.cols - 1)
                                     val tapRow = (down.position.y / baseCharHeight).toInt()
                                         .coerceIn(0, screenState.snapshot.rows - 1)
@@ -1150,6 +1238,9 @@ fun TerminalWithAccessibility(
                                     if (hyperlinkUrl != null) {
                                         // User tapped on a hyperlink
                                         onHyperlinkClick(hyperlinkUrl)
+                                    } else if (onMouseClick != null) {
+                                        // Mouse mode enabled - send tap as mouse click
+                                        onMouseClick(tapRow, tapCol, 0)  // 0 = left button
                                     } else {
                                         // Request focus when terminal is tapped to show keyboard
                                         if (keyboardEnabled) {
@@ -1333,7 +1424,21 @@ fun TerminalWithAccessibility(
         if (keyboardEnabled) {
             AndroidView(
                 factory = { context ->
-                    ImeInputView(context, keyboardHandler).apply {
+                    ImeInputView(
+                        context = context,
+                        keyboardHandler = keyboardHandler,
+                        enableVoiceInputSupport = enableComposingOverlay,
+                        onComposingTextChanged = { text ->
+                            composingText = text
+                        },
+                        onTextCommitted = { text ->
+                            // Clear composing state
+                            composingText = null
+                            showComposingOverlay = false
+                            // Send to terminal
+                            keyboardHandler.onTextInput(text.toByteArray(Charsets.UTF_8))
+                        }
+                    ).apply {
                         // Set up key event handling
                         setOnKeyListener { _, _, event ->
                             keyboardHandler.onKeyEvent(
@@ -1349,6 +1454,24 @@ fun TerminalWithAccessibility(
                     .focusable()
                     .focusRequester(focusRequester)
             )
+        }
+
+        // Composing text overlay (for voice input)
+        // Shows uncommitted text in a small panel above the keyboard area
+        if (showComposingOverlay && composingText != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 8.dp)
+                    .background(Color(0xE6333333), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = composingText ?: "",
+                    color = Color.White,
+                    fontSize = 14.sp
+                )
+            }
         }
     }
 
