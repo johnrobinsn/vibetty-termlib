@@ -1068,7 +1068,7 @@ fun TerminalWithAccessibility(
                                             // Mouse mode: send mouse wheel events instead of scrollback
                                             // Accumulate drag and fire scroll events per line of movement
                                             mouseScrollAccumulator += dragAmount.y
-                                            val scrollLines = (mouseScrollAccumulator / baseCharHeight).toInt()
+                                            val scrollLines = (mouseScrollAccumulator / (baseCharHeight * 3)).toInt()
                                             if (scrollLines != 0) {
                                                 // Calculate position for scroll event (use current drag position)
                                                 val adjustedX = change.position.x + horizontalPanOffset
@@ -1082,7 +1082,7 @@ fun TerminalWithAccessibility(
                                                 repeat(kotlin.math.abs(scrollLines)) {
                                                     onMouseScroll(scrollRow, scrollCol, scrollUp)
                                                 }
-                                                mouseScrollAccumulator -= scrollLines * baseCharHeight
+                                                mouseScrollAccumulator -= scrollLines * (baseCharHeight * 3)
                                             }
                                         } else {
                                             // Normal mode: scroll terminal buffer
