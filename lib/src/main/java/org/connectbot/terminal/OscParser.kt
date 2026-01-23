@@ -77,7 +77,7 @@ internal class OscParser {
         cols: Int
     ): List<Action> {
         return when (command) {
-            8 -> handleOsc8(payload, cursorRow, cursorCol)
+            8 -> handleOsc8(payload, cursorRow, cursorCol, cols)
             52 -> handleOsc52(payload)
             133 -> handleOsc133(payload, cursorRow, cursorCol)
             1337 -> handleOsc1337(payload, cursorRow, cursorCol, cols)
@@ -139,7 +139,7 @@ internal class OscParser {
      * This enables clickable links in the terminal while maintaining the display
      * text separately from the URL for accessibility.
      */
-    private fun handleOsc8(payload: String, cursorRow: Int, cursorCol: Int): List<Action> {
+    private fun handleOsc8(payload: String, cursorRow: Int, cursorCol: Int, cols: Int): List<Action> {
         val actions = mutableListOf<Action>()
 
         // Payload format: "params;URL"
@@ -153,13 +153,28 @@ internal class OscParser {
             // End hyperlink - create segment if we have an active hyperlink
             val activeUrl = activeHyperlinkUrl
             if (activeUrl != null) {
-                // Handle single-line hyperlink
-                if (hyperlinkStartRow == cursorRow && hyperlinkStartCol < cursorCol) {
+                if (hyperlinkStartRow == cursorRow) {
+                    // Single-line hyperlink - use cursor column as end
+                    if (hyperlinkStartCol < cursorCol) {
+                        actions.add(
+                            Action.AddSegment(
+                                row = hyperlinkStartRow,
+                                startCol = hyperlinkStartCol,
+                                endCol = cursorCol,
+                                type = SemanticType.HYPERLINK,
+                                metadata = activeUrl,
+                                promptId = currentPromptId
+                            )
+                        )
+                    }
+                } else {
+                    // Multi-row hyperlink (cursor moved to next line due to newline)
+                    // Create segment on start row extending to end of line
                     actions.add(
                         Action.AddSegment(
-                            row = cursorRow,
+                            row = hyperlinkStartRow,
                             startCol = hyperlinkStartCol,
-                            endCol = cursorCol,
+                            endCol = cols,
                             type = SemanticType.HYPERLINK,
                             metadata = activeUrl,
                             promptId = currentPromptId
@@ -174,17 +189,31 @@ internal class OscParser {
             // Start new hyperlink
             // If we have an active hyperlink, close it first (shouldn't happen normally)
             val activeUrl = activeHyperlinkUrl
-            if (activeUrl != null && hyperlinkStartRow == cursorRow && hyperlinkStartCol < cursorCol) {
-                actions.add(
-                    Action.AddSegment(
-                        row = cursorRow,
-                        startCol = hyperlinkStartCol,
-                        endCol = cursorCol,
-                        type = SemanticType.HYPERLINK,
-                        metadata = activeUrl,
-                        promptId = currentPromptId
+            if (activeUrl != null) {
+                if (hyperlinkStartRow == cursorRow && hyperlinkStartCol < cursorCol) {
+                    actions.add(
+                        Action.AddSegment(
+                            row = hyperlinkStartRow,
+                            startCol = hyperlinkStartCol,
+                            endCol = cursorCol,
+                            type = SemanticType.HYPERLINK,
+                            metadata = activeUrl,
+                            promptId = currentPromptId
+                        )
                     )
-                )
+                } else if (hyperlinkStartRow != cursorRow) {
+                    // Multi-row case
+                    actions.add(
+                        Action.AddSegment(
+                            row = hyperlinkStartRow,
+                            startCol = hyperlinkStartCol,
+                            endCol = cols,
+                            type = SemanticType.HYPERLINK,
+                            metadata = activeUrl,
+                            promptId = currentPromptId
+                        )
+                    )
+                }
             }
 
             // Parse optional id from params

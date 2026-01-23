@@ -998,7 +998,8 @@ internal class TerminalEmulatorImpl(
         }
 
         // Update cached line, preserving any existing semantic segments
-        // Must synchronize to ensure visibility of segments added by addSemanticSegment
+        // Note: This can cause stale segments when tmux scrolls, but clearing them
+        // breaks normal hyperlink rendering. Accepting this as a known limitation.
         synchronized(damageLock) {
             currentLines = currentLines.toMutableList().apply {
                 val existingSegments = this[row].semanticSegments
