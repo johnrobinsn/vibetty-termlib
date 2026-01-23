@@ -338,7 +338,9 @@ fun Terminal(
     onMouseClick: ((row: Int, col: Int, button: Int) -> Unit)? = null,
     onMouseScroll: ((row: Int, col: Int, scrollUp: Boolean) -> Unit)? = null,
     onShowKeyboardPanel: () -> Unit = {},
-    onHideKeyboardPanel: () -> Unit = {}
+    onHideKeyboardPanel: () -> Unit = {},
+    onToggleKeyboard: () -> Unit = {},
+    onToggleVirtualWidth: () -> Unit = {}
 ) {
     TerminalWithAccessibility(
         terminalEmulator = terminalEmulator,
@@ -365,7 +367,9 @@ fun Terminal(
         onMouseClick = onMouseClick,
         onMouseScroll = onMouseScroll,
         onShowKeyboardPanel = onShowKeyboardPanel,
-        onHideKeyboardPanel = onHideKeyboardPanel
+        onHideKeyboardPanel = onHideKeyboardPanel,
+        onToggleKeyboard = onToggleKeyboard,
+        onToggleVirtualWidth = onToggleVirtualWidth
     )
 }
 
@@ -402,7 +406,9 @@ fun TerminalWithAccessibility(
     onMouseClick: ((row: Int, col: Int, button: Int) -> Unit)? = null,
     onMouseScroll: ((row: Int, col: Int, scrollUp: Boolean) -> Unit)? = null,
     onShowKeyboardPanel: () -> Unit = {},
-    onHideKeyboardPanel: () -> Unit = {}
+    onHideKeyboardPanel: () -> Unit = {},
+    onToggleKeyboard: () -> Unit = {},
+    onToggleVirtualWidth: () -> Unit = {}
 ) {
     if (terminalEmulator !is TerminalEmulatorImpl) {
         Box(
@@ -682,6 +688,16 @@ fun TerminalWithAccessibility(
         }
     }
 
+    // Setup keyboard toggle callback for Ctrl+Alt+K (hardware keyboard)
+    SideEffect {
+        keyboardHandler.onToggleKeyboard = onToggleKeyboard
+    }
+
+    // Setup virtual width toggle callback for Ctrl+Alt+H (hardware keyboard)
+    SideEffect {
+        keyboardHandler.onToggleVirtualWidth = onToggleVirtualWidth
+    }
+
     // Update backtick-to-Escape setting for hardware keyboard
     SideEffect {
         keyboardHandler.backtickAsEscape = backtickAsEscape
@@ -761,7 +777,7 @@ fun TerminalWithAccessibility(
         }
 
         // Resize terminal when dimensions change
-        LaunchedEffect(terminalEmulator, availableWidth, availableHeight, forcedSize, baseCharWidth, baseCharHeight) {
+        LaunchedEffect(terminalEmulator, availableWidth, availableHeight, forcedSize, baseCharWidth, baseCharHeight, virtualWidthColumns) {
             if (availableWidth == 0 || availableHeight == 0) {
                 return@LaunchedEffect
             }

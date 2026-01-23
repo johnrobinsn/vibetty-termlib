@@ -49,6 +49,8 @@ internal class KeyboardHandler(
     var selectionController: SelectionController? = null,
     var onInputProcessed: (() -> Unit)? = null,
     var onPanJumpRequest: ((toRight: Boolean) -> Unit)? = null,
+    var onToggleKeyboard: (() -> Unit)? = null,
+    var onToggleVirtualWidth: (() -> Unit)? = null,
     var backtickAsEscape: Boolean = false
 ) {
     /**
@@ -80,7 +82,7 @@ internal class KeyboardHandler(
             return false
         }
 
-        // Handle Ctrl+Alt+Arrow for horizontal pan jump
+        // Handle Ctrl+Alt shortcuts for hardware keyboard
         if (ctrl && alt) {
             when (key) {
                 Key.DirectionLeft -> {
@@ -89,6 +91,14 @@ internal class KeyboardHandler(
                 }
                 Key.DirectionRight -> {
                     onPanJumpRequest?.invoke(true)
+                    return true
+                }
+                Key.K -> {
+                    onToggleKeyboard?.invoke()
+                    return true
+                }
+                Key.H -> {
+                    onToggleVirtualWidth?.invoke()
                     return true
                 }
             }
