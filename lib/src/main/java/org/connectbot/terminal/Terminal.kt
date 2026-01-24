@@ -1544,8 +1544,9 @@ private fun DrawScope.drawLine(
             textPaint.color = fgColor.toArgb()
             textPaint.isFakeBoldText = cell.bold
             textPaint.textSkewX = if (cell.italic) -0.25f else 0f
-            // Underline if cell has underline OR if it's a hyperlink
-            textPaint.isUnderlineText = cell.underline == 1 || isHyperlink
+            // Underline if cell has underline attribute
+            // Note: Hyperlink underlines disabled until stale segment bug is fixed
+            textPaint.isUnderlineText = cell.underline == 1
             textPaint.isStrikeThruText = cell.strike
 
             // Draw text
