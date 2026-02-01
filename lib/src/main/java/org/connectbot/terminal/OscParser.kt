@@ -187,33 +187,20 @@ internal class OscParser {
             }
         } else {
             // Start new hyperlink
-            // If we have an active hyperlink, close it first (shouldn't happen normally)
+            // If we have an active hyperlink on the same row, close it first
+            // If on a different row, silently abandon it (don't create segment for incomplete hyperlink)
             val activeUrl = activeHyperlinkUrl
-            if (activeUrl != null) {
-                if (hyperlinkStartRow == cursorRow && hyperlinkStartCol < cursorCol) {
-                    actions.add(
-                        Action.AddSegment(
-                            row = hyperlinkStartRow,
-                            startCol = hyperlinkStartCol,
-                            endCol = cursorCol,
-                            type = SemanticType.HYPERLINK,
-                            metadata = activeUrl,
-                            promptId = currentPromptId
-                        )
+            if (activeUrl != null && hyperlinkStartRow == cursorRow && hyperlinkStartCol < cursorCol) {
+                actions.add(
+                    Action.AddSegment(
+                        row = hyperlinkStartRow,
+                        startCol = hyperlinkStartCol,
+                        endCol = cursorCol,
+                        type = SemanticType.HYPERLINK,
+                        metadata = activeUrl,
+                        promptId = currentPromptId
                     )
-                } else if (hyperlinkStartRow != cursorRow) {
-                    // Multi-row case
-                    actions.add(
-                        Action.AddSegment(
-                            row = hyperlinkStartRow,
-                            startCol = hyperlinkStartCol,
-                            endCol = cols,
-                            type = SemanticType.HYPERLINK,
-                            metadata = activeUrl,
-                            promptId = currentPromptId
-                        )
-                    )
-                }
+                )
             }
 
             // Parse optional id from params
