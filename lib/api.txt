@@ -1,11 +1,84 @@
 // Signature format: 4.0
 package org.connectbot.terminal {
 
+  public final class KittyKeyboardProtocol {
+    ctor public KittyKeyboardProtocol();
+    method public byte[] encodeCharacter(int codepoint, int modifiers);
+    method public byte[]? encodeKey(int vTermKey, int modifiers);
+    method public byte[] generateQueryResponse();
+    method public int getCurrentFlags();
+    method public boolean isActive();
+    method public boolean isAlternateScreen();
+    method public boolean isEnabledByUser();
+    method public void popMode(optional int count);
+    method public void pushMode(int flags);
+    method public void reset();
+    method public void setAlternateScreen(boolean);
+    method public void setEnabledByUser(boolean);
+    method public boolean shouldEncode(int vTermKey, int modifiers);
+    property public final int currentFlags;
+    property public final boolean isActive;
+    property public final boolean isAlternateScreen;
+    property public final boolean isEnabledByUser;
+    field public static final org.connectbot.terminal.KittyKeyboardProtocol.Companion Companion;
+    field public static final int FLAG_DISAMBIGUATE = 1; // 0x1
+    field public static final int FLAG_REPORT_ALL_KEYS = 8; // 0x8
+    field public static final int FLAG_REPORT_ALTERNATE_KEYS = 4; // 0x4
+    field public static final int FLAG_REPORT_EVENT_TYPES = 2; // 0x2
+    field public static final int FLAG_REPORT_TEXT = 16; // 0x10
+    field public static final int KEY_BACKSPACE = 127; // 0x7f
+    field public static final int KEY_ENTER = 13; // 0xd
+    field public static final int KEY_ESCAPE = 27; // 0x1b
+    field public static final int KEY_SPACE = 32; // 0x20
+    field public static final int KEY_TAB = 9; // 0x9
+    field public static final int MOD_ALT = 2; // 0x2
+    field public static final int MOD_CTRL = 4; // 0x4
+    field public static final int MOD_HYPER = 16; // 0x10
+    field public static final int MOD_META = 32; // 0x20
+    field public static final int MOD_SHIFT = 1; // 0x1
+    field public static final int MOD_SUPER = 8; // 0x8
+  }
+
+  public static final class KittyKeyboardProtocol.Companion {
+  }
+
   public interface ModifierManager {
     method public void clearTransients();
     method public boolean isAltActive();
     method public boolean isCtrlActive();
     method public boolean isShiftActive();
+  }
+
+  public final class ModifyOtherKeysProtocol {
+    ctor public ModifyOtherKeysProtocol();
+    method public byte[] encodeCharacter(int codepoint, int modifiers);
+    method public byte[]? encodeKey(int vTermKey, int modifiers);
+    method public int getCurrentMode();
+    method public boolean isActive();
+    method public boolean isAlternateScreen();
+    method public void reset();
+    method public void setAlternateScreen(boolean);
+    method public void setMode(int mode);
+    method public boolean shouldEncode(int vTermKey, int modifiers);
+    property public final int currentMode;
+    property public final boolean isActive;
+    property public final boolean isAlternateScreen;
+    field public static final org.connectbot.terminal.ModifyOtherKeysProtocol.Companion Companion;
+    field public static final int KEY_BACKSPACE = 127; // 0x7f
+    field public static final int KEY_ENTER = 13; // 0xd
+    field public static final int KEY_ESCAPE = 27; // 0x1b
+    field public static final int KEY_SPACE = 32; // 0x20
+    field public static final int KEY_TAB = 9; // 0x9
+    field public static final int MODE_1 = 1; // 0x1
+    field public static final int MODE_2 = 2; // 0x2
+    field public static final int MODE_DISABLED = 0; // 0x0
+    field public static final int MOD_ALT = 2; // 0x2
+    field public static final int MOD_CTRL = 4; // 0x4
+    field public static final int MOD_META = 8; // 0x8
+    field public static final int MOD_SHIFT = 1; // 0x1
+  }
+
+  public static final class ModifyOtherKeysProtocol.Companion {
   }
 
   public interface SelectionController {
@@ -45,12 +118,18 @@ package org.connectbot.terminal {
     method public void clearScreen();
     method public void dispatchCharacter(int modifiers, char character);
     method public void dispatchKey(int modifiers, int key);
+    method public byte[]? encodeKittyKey(int vTermKey, int modifiers);
+    method public byte[]? encodeModifyOtherKeysKey(int vTermKey, int modifiers);
     method public org.connectbot.terminal.TerminalDimensions getDimensions();
     method public void resize(int newRows, int newCols);
     method public int setAnsiPalette(int[] ansiColors);
     method public int setDefaultColors(int foreground, int background);
+    method public void setKittyKeyboardEnabled(boolean enabled);
+    method public boolean shouldEncodeKitty(int vTermKey, int modifiers);
+    method public boolean shouldEncodeModifyOtherKeys(int vTermKey, int modifiers);
     method public void writeInput(byte[] data, optional int offset, optional int length);
     method public void writeInput(java.nio.ByteBuffer buffer, int length);
+    method public void writeKeyboardOutput(byte[] data);
     property public abstract org.connectbot.terminal.TerminalDimensions dimensions;
   }
 
@@ -64,8 +143,8 @@ package org.connectbot.terminal {
   }
 
   public final class TerminalKt {
-    method @androidx.compose.runtime.Composable public static void Terminal(org.connectbot.terminal.TerminalEmulator terminalEmulator, optional androidx.compose.ui.Modifier modifier, optional android.graphics.Typeface typeface, optional long initialFontSize, optional long minFontSize, optional long maxFontSize, optional long backgroundColor, optional long foregroundColor, optional boolean keyboardEnabled, optional boolean showSoftKeyboard, optional androidx.compose.ui.focus.FocusRequester focusRequester, optional kotlin.jvm.functions.Function0<kotlin.Unit> onTerminalTap, optional kotlin.jvm.functions.Function1<? super java.lang.Boolean,kotlin.Unit> onImeVisibilityChanged, optional kotlin.Pair<java.lang.Integer,java.lang.Integer>? forcedSize, optional org.connectbot.terminal.ModifierManager? modifierManager, optional kotlin.jvm.functions.Function1<? super org.connectbot.terminal.SelectionController,kotlin.Unit>? onSelectionControllerAvailable, optional kotlin.jvm.functions.Function1<? super java.lang.String,kotlin.Unit> onHyperlinkClick, optional Integer? virtualWidthColumns, optional float horizontalScrollIndicatorBottomOffset);
-    method @VisibleForTesting @androidx.compose.runtime.Composable public static void TerminalWithAccessibility(org.connectbot.terminal.TerminalEmulator terminalEmulator, optional androidx.compose.ui.Modifier modifier, optional android.graphics.Typeface typeface, optional long initialFontSize, optional long minFontSize, optional long maxFontSize, optional long backgroundColor, optional long foregroundColor, optional boolean keyboardEnabled, optional boolean showSoftKeyboard, optional androidx.compose.ui.focus.FocusRequester focusRequester, optional kotlin.jvm.functions.Function0<kotlin.Unit> onTerminalTap, optional kotlin.jvm.functions.Function1<? super java.lang.Boolean,kotlin.Unit> onImeVisibilityChanged, optional kotlin.Pair<java.lang.Integer,java.lang.Integer>? forcedSize, optional org.connectbot.terminal.ModifierManager? modifierManager, optional Boolean? forceAccessibilityEnabled, optional kotlin.jvm.functions.Function1<? super org.connectbot.terminal.SelectionController,kotlin.Unit>? onSelectionControllerAvailable, optional kotlin.jvm.functions.Function1<? super java.lang.String,kotlin.Unit> onHyperlinkClick, optional Integer? virtualWidthColumns, optional float horizontalScrollIndicatorBottomOffset);
+    method @androidx.compose.runtime.Composable public static void Terminal(org.connectbot.terminal.TerminalEmulator terminalEmulator, optional androidx.compose.ui.Modifier modifier, optional android.graphics.Typeface typeface, optional long initialFontSize, optional long minFontSize, optional long maxFontSize, optional long backgroundColor, optional long foregroundColor, optional boolean keyboardEnabled, optional boolean showSoftKeyboard, optional androidx.compose.ui.focus.FocusRequester focusRequester, optional kotlin.jvm.functions.Function0<kotlin.Unit> onTerminalTap, optional kotlin.jvm.functions.Function1<? super java.lang.Boolean,kotlin.Unit> onImeVisibilityChanged, optional kotlin.Pair<java.lang.Integer,java.lang.Integer>? forcedSize, optional org.connectbot.terminal.ModifierManager? modifierManager, optional kotlin.jvm.functions.Function1<? super org.connectbot.terminal.SelectionController,kotlin.Unit>? onSelectionControllerAvailable, optional kotlin.jvm.functions.Function1<? super java.lang.String,kotlin.Unit> onHyperlinkClick, optional Integer? virtualWidthColumns, optional float horizontalScrollIndicatorBottomOffset, optional boolean backtickAsEscape, optional boolean enableComposingOverlay, optional kotlin.jvm.functions.Function3<? super java.lang.Integer,? super java.lang.Integer,? super java.lang.Integer,kotlin.Unit>? onMouseClick, optional kotlin.jvm.functions.Function3<? super java.lang.Integer,? super java.lang.Integer,? super java.lang.Boolean,kotlin.Unit>? onMouseScroll, optional kotlin.jvm.functions.Function0<kotlin.Unit> onShowKeyboardPanel, optional kotlin.jvm.functions.Function0<kotlin.Unit> onHideKeyboardPanel, optional kotlin.jvm.functions.Function0<kotlin.Unit> onToggleKeyboard, optional kotlin.jvm.functions.Function0<kotlin.Unit> onToggleVirtualWidth);
+    method @VisibleForTesting @androidx.compose.runtime.Composable public static void TerminalWithAccessibility(org.connectbot.terminal.TerminalEmulator terminalEmulator, optional androidx.compose.ui.Modifier modifier, optional android.graphics.Typeface typeface, optional long initialFontSize, optional long minFontSize, optional long maxFontSize, optional long backgroundColor, optional long foregroundColor, optional boolean keyboardEnabled, optional boolean showSoftKeyboard, optional androidx.compose.ui.focus.FocusRequester focusRequester, optional kotlin.jvm.functions.Function0<kotlin.Unit> onTerminalTap, optional kotlin.jvm.functions.Function1<? super java.lang.Boolean,kotlin.Unit> onImeVisibilityChanged, optional kotlin.Pair<java.lang.Integer,java.lang.Integer>? forcedSize, optional org.connectbot.terminal.ModifierManager? modifierManager, optional Boolean? forceAccessibilityEnabled, optional kotlin.jvm.functions.Function1<? super org.connectbot.terminal.SelectionController,kotlin.Unit>? onSelectionControllerAvailable, optional kotlin.jvm.functions.Function1<? super java.lang.String,kotlin.Unit> onHyperlinkClick, optional Integer? virtualWidthColumns, optional float horizontalScrollIndicatorBottomOffset, optional boolean backtickAsEscape, optional boolean enableComposingOverlay, optional kotlin.jvm.functions.Function3<? super java.lang.Integer,? super java.lang.Integer,? super java.lang.Integer,kotlin.Unit>? onMouseClick, optional kotlin.jvm.functions.Function3<? super java.lang.Integer,? super java.lang.Integer,? super java.lang.Boolean,kotlin.Unit>? onMouseScroll, optional kotlin.jvm.functions.Function0<kotlin.Unit> onShowKeyboardPanel, optional kotlin.jvm.functions.Function0<kotlin.Unit> onHideKeyboardPanel, optional kotlin.jvm.functions.Function0<kotlin.Unit> onToggleKeyboard, optional kotlin.jvm.functions.Function0<kotlin.Unit> onToggleVirtualWidth);
   }
 
   public final class VTermKey {
