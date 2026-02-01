@@ -1163,10 +1163,10 @@ fun TerminalWithAccessibility(
                                 // Horizontal flick detection - jump to edges instantly
                                 // Flick right (positive velocity.x) = jump to left edge
                                 // Flick left (negative velocity.x) = jump to right edge
-                                val horizontalFlickThreshold = 1500f  // pixels per second
+                                val horizontalFlickThreshold = 1000f  // pixels per second
                                 val hasHorizontalFlick = isHorizontalPanEnabled &&
                                     kotlin.math.abs(velocity.x) > horizontalFlickThreshold &&
-                                    kotlin.math.abs(velocity.x) > kotlin.math.abs(velocity.y) * 2
+                                    kotlin.math.abs(velocity.x) > kotlin.math.abs(velocity.y) * 1.5f
 
                                 if (hasHorizontalFlick) {
                                     horizontalPanOffset = if (velocity.x > 0) {
