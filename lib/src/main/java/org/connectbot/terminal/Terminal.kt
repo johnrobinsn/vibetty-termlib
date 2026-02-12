@@ -107,8 +107,12 @@ private enum class GestureType {
     Scroll,
     Selection,
     Zoom,
-    HandleDrag
+    HandleDrag,
+    MouseDrag
 }
+
+/** Hold duration (ms) before drag is sent as mouse down+drag to terminal (for tmux selection/resize) */
+private const val MOUSE_DRAG_HOLD_MS = 250L
 
 /**
  * The rate at which the cursor blinks in milliseconds when enabled.
@@ -307,8 +311,11 @@ private const val DOUBLE_UNDERLINE_SPACING = 2f
  *                            and single-finger horizontal drag pans the view. Height is still calculated
  *                            from available space. When null (default), terminal sizes to available width.
  * @param horizontalScrollIndicatorBottomOffset Offset from the bottom for the horizontal scroll indicator.
- * @param onMouseClick Callback when user taps on terminal and mouse mode is enabled. Receives row, col (0-indexed), and button (0=left).
+ * @param onMouseClick Callback when user taps on terminal and mouse mode is enabled. Receives row, col (0-indexed), and button (0=left, 2=right).
  * @param onMouseScroll Callback when user drags vertically and mouse mode is enabled. Receives row, col (0-indexed), and scrollUp (true=up, false=down).
+ * @param onMouseDown Callback when mouse button is pressed (for tmux drag). Receives row, col (0-indexed), and button.
+ * @param onMouseDrag Callback when mouse is dragged with button held (for tmux selection/resize). Receives row, col (0-indexed), and button.
+ * @param onMouseUp Callback when mouse button is released. Receives row, col (0-indexed), and button.
  * @param onShowKeyboardPanel Callback when user swipes up from bottom of screen to show keyboard panel.
  * @param onHideKeyboardPanel Callback when user swipes down from top of screen to hide keyboard panel.
  */
@@ -337,6 +344,9 @@ fun Terminal(
     enableComposingOverlay: Boolean = false,
     onMouseClick: ((row: Int, col: Int, button: Int) -> Unit)? = null,
     onMouseScroll: ((row: Int, col: Int, scrollUp: Boolean) -> Unit)? = null,
+    onMouseDown: ((row: Int, col: Int, button: Int) -> Unit)? = null,
+    onMouseDrag: ((row: Int, col: Int, button: Int) -> Unit)? = null,
+    onMouseUp: ((row: Int, col: Int, button: Int) -> Unit)? = null,
     onShowKeyboardPanel: () -> Unit = {},
     onHideKeyboardPanel: () -> Unit = {},
     onToggleKeyboard: () -> Unit = {},
@@ -366,6 +376,9 @@ fun Terminal(
         enableComposingOverlay = enableComposingOverlay,
         onMouseClick = onMouseClick,
         onMouseScroll = onMouseScroll,
+        onMouseDown = onMouseDown,
+        onMouseDrag = onMouseDrag,
+        onMouseUp = onMouseUp,
         onShowKeyboardPanel = onShowKeyboardPanel,
         onHideKeyboardPanel = onHideKeyboardPanel,
         onToggleKeyboard = onToggleKeyboard,
@@ -405,6 +418,9 @@ fun TerminalWithAccessibility(
     enableComposingOverlay: Boolean = false,
     onMouseClick: ((row: Int, col: Int, button: Int) -> Unit)? = null,
     onMouseScroll: ((row: Int, col: Int, scrollUp: Boolean) -> Unit)? = null,
+    onMouseDown: ((row: Int, col: Int, button: Int) -> Unit)? = null,
+    onMouseDrag: ((row: Int, col: Int, button: Int) -> Unit)? = null,
+    onMouseUp: ((row: Int, col: Int, button: Int) -> Unit)? = null,
     onShowKeyboardPanel: () -> Unit = {},
     onHideKeyboardPanel: () -> Unit = {},
     onToggleKeyboard: () -> Unit = {},
@@ -948,6 +964,11 @@ fun TerminalWithAccessibility(
                         }
 
                         if (secondPointer != null) {
+                            // Two-finger gesture: could be zoom/pinch or two-finger tap (right-click)
+                            val twoFingerStartPos1 = down.position
+                            val twoFingerStartPos2 = secondPointer.position
+                            var isTwoFingerTap = true
+
                             gestureType = GestureType.Zoom
 
                             // Handle zoom using Compose's built-in gesture calculations
@@ -968,6 +989,14 @@ fun TerminalWithAccessibility(
                                     val gestureZoom = event.calculateZoom()
                                     val gesturePan = event.calculatePan()
 
+                                    // Check if fingers moved significantly (not a tap)
+                                    for (c in event.changes) {
+                                        val startPos = if (c.id == down.id) twoFingerStartPos1 else twoFingerStartPos2
+                                        if ((c.position - startPos).getDistanceSquared() > touchSlopSquared) {
+                                            isTwoFingerTap = false
+                                        }
+                                    }
+
                                     val oldScale = zoomScale
                                     val newScale =
                                         (oldScale * gestureZoom).coerceIn(
@@ -982,10 +1011,20 @@ fun TerminalWithAccessibility(
                                 }
                             }
 
-                            // Gesture ended - reset
+                            // Gesture ended - reset zoom
                             isZooming = false
                             zoomScale = 1f
                             zoomOffset = Offset.Zero
+
+                            // Two-finger tap detected → right-click (button 2)
+                            if (isTwoFingerTap && onMouseClick != null) {
+                                val adjustedX = centerX + horizontalPanOffset
+                                val tapCol = (adjustedX / baseCharWidth).toInt()
+                                    .coerceIn(0, screenState.snapshot.cols - 1)
+                                val tapRow = (centerY / baseCharHeight).toInt()
+                                    .coerceIn(0, screenState.snapshot.rows - 1)
+                                onMouseClick(tapRow, tapCol, 2)  // 2 = right button
+                            }
 
                             return@awaitEachGesture
                         }
@@ -1011,33 +1050,46 @@ fun TerminalWithAccessibility(
                             if (gestureType == GestureType.Undetermined && !longPressDetected) {
                                 val totalOffset = change.position - down.position
                                 if (totalOffset.getDistanceSquared() > touchSlopSquared) {
-                                    // Movement exceeded touch slop - this is a scroll gesture
-                                    gestureType = GestureType.Scroll
-                                    isUserScrolling = true
-                                    scrollGestureGeneration++  // Increment to invalidate any pending fling completions
-                                    thisGestureGeneration = scrollGestureGeneration
-                                    // Capture maxScroll NOW when entering scroll mode (not at gesture start)
-                                    // This ensures we use the scrollback size at the moment scrolling begins
-                                    gestureMaxScroll = screenState.snapshot.scrollback.size * baseCharHeight
-                                    // Initialize local scroll tracking from current position only
-                                    // Don't add totalOffset.y here - let the scroll handler add dragAmount.y
-                                    currentScrollOffset = screenState.scrollbackPosition * baseCharHeight
-                                    Log.d("Terminal", "SCROLL START: gen=$thisGestureGeneration, scrollbackPos=${screenState.scrollbackPosition}, currentScrollOffset=$currentScrollOffset, gestureMaxScroll=$gestureMaxScroll, totalOffset=$totalOffset")
-                                    // Apply initial horizontal offset
-                                    if (isHorizontalPanEnabled) {
-                                        horizontalPanOffset = (horizontalPanOffset - totalOffset.x)
-                                            .coerceIn(0f, maxHorizontalPan)
+                                    // Movement exceeded touch slop - decide between Scroll and MouseDrag
+                                    // based on how long the user held before starting to move
+                                    val holdTime = System.currentTimeMillis() - longPressStartTime
+                                    if (onMouseDown != null && holdTime >= MOUSE_DRAG_HOLD_MS) {
+                                        // User held for 250ms+ then started dragging → tmux mouse drag
+                                        gestureType = GestureType.MouseDrag
+                                        val col = ((down.position.x + horizontalPanOffset) / baseCharWidth).toInt()
+                                            .coerceIn(0, screenState.snapshot.cols - 1)
+                                        val row = (down.position.y / baseCharHeight).toInt()
+                                            .coerceIn(0, screenState.snapshot.rows - 1)
+                                        onMouseDown(row, col, 0)  // 0 = left button
+                                    } else {
+                                        // Immediate drag → scroll/pan gesture
+                                        gestureType = GestureType.Scroll
+                                        isUserScrolling = true
+                                        scrollGestureGeneration++  // Increment to invalidate any pending fling completions
+                                        thisGestureGeneration = scrollGestureGeneration
+                                        // Capture maxScroll NOW when entering scroll mode (not at gesture start)
+                                        // This ensures we use the scrollback size at the moment scrolling begins
+                                        gestureMaxScroll = screenState.snapshot.scrollback.size * baseCharHeight
+                                        // Initialize local scroll tracking from current position only
+                                        // Don't add totalOffset.y here - let the scroll handler add dragAmount.y
+                                        currentScrollOffset = screenState.scrollbackPosition * baseCharHeight
+                                        Log.d("Terminal", "SCROLL START: gen=$thisGestureGeneration, scrollbackPos=${screenState.scrollbackPosition}, currentScrollOffset=$currentScrollOffset, gestureMaxScroll=$gestureMaxScroll, totalOffset=$totalOffset")
+                                        // Apply initial horizontal offset
+                                        if (isHorizontalPanEnabled) {
+                                            horizontalPanOffset = (horizontalPanOffset - totalOffset.x)
+                                                .coerceIn(0f, maxHorizontalPan)
+                                        }
+                                        // Clear any active selection when scrolling starts
+                                        if (selectionManager.mode != SelectionMode.NONE) {
+                                            selectionManager.clearSelection()
+                                        }
                                     }
-                                    // Clear any active selection when scrolling starts
-                                    if (selectionManager.mode != SelectionMode.NONE) {
-                                        selectionManager.clearSelection()
-                                    }
-                                    // Don't continue - let the scroll handler run to apply dragAmount
+                                    // Don't continue - let the gesture handler run to apply dragAmount
                                 } else {
-                                    // Still within touch slop - check for long press timeout
+                                    // Still within touch slop - check hold duration thresholds
                                     val elapsedTime = System.currentTimeMillis() - longPressStartTime
                                     if (elapsedTime >= longPressTimeoutMs && selectionManager.mode == SelectionMode.NONE) {
-                                        // Long press detected - start selection
+                                        // Long press detected - start terminal text selection with magnifier
                                         longPressDetected = true
                                         gestureType = GestureType.Selection
 
@@ -1123,6 +1175,19 @@ fun TerminalWithAccessibility(
                                     if (isHorizontalPanEnabled) {
                                         horizontalPanOffset = (horizontalPanOffset - dragAmount.x)
                                             .coerceIn(0f, maxHorizontalPan)
+                                    }
+                                }
+
+                                GestureType.MouseDrag -> {
+                                    // Send mouse drag events per cell change
+                                    if (onMouseDrag != null) {
+                                        val dragCol =
+                                            ((change.position.x + horizontalPanOffset) / baseCharWidth).toInt()
+                                                .coerceIn(0, screenState.snapshot.cols - 1)
+                                        val dragRow =
+                                            (change.position.y / baseCharHeight).toInt()
+                                                .coerceIn(0, screenState.snapshot.rows - 1)
+                                        onMouseDrag(dragRow, dragCol, 0)  // 0 = left button
                                     }
                                 }
 
@@ -1235,6 +1300,19 @@ fun TerminalWithAccessibility(
                                 }
                             }
 
+                            GestureType.MouseDrag -> {
+                                // Send mouse release at final position
+                                if (onMouseUp != null) {
+                                    val releaseCol =
+                                        ((lastDragPosition.x + horizontalPanOffset) / baseCharWidth).toInt()
+                                            .coerceIn(0, screenState.snapshot.cols - 1)
+                                    val releaseRow =
+                                        (lastDragPosition.y / baseCharHeight).toInt()
+                                            .coerceIn(0, screenState.snapshot.rows - 1)
+                                    onMouseUp(releaseRow, releaseCol, 0)  // 0 = left button
+                                }
+                            }
+
                             GestureType.Undetermined -> {
                                 // This is a tap. If a selection is active, clear it.
                                 // Otherwise, check for hyperlink, mouse click, or forward the tap.
@@ -1254,8 +1332,12 @@ fun TerminalWithAccessibility(
                                     if (hyperlinkUrl != null) {
                                         // User tapped on a hyperlink
                                         onHyperlinkClick(hyperlinkUrl)
+                                    } else if (onMouseDown != null && onMouseUp != null) {
+                                        // Tmux mode: send full down+up click sequence
+                                        onMouseDown(tapRow, tapCol, 0)
+                                        onMouseUp(tapRow, tapCol, 0)
                                     } else if (onMouseClick != null) {
-                                        // Mouse mode enabled - send tap as mouse click
+                                        // Basic mouse mode: send tap as mouse click
                                         onMouseClick(tapRow, tapCol, 0)  // 0 = left button
                                     } else {
                                         // Request focus when terminal is tapped to show keyboard
