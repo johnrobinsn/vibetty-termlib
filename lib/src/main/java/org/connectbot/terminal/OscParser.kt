@@ -58,6 +58,19 @@ internal class OscParser {
             val selection: String,
             val data: String
         ) : Action()
+
+        /**
+         * Action to show a terminal notification via OSC 9, OSC 99, or OSC 777.
+         *
+         * @param title Optional notification title (null for OSC 9 which has no title)
+         * @param body The notification message body
+         * @param urgency Urgency level: 0=low, 1=normal, 2=critical
+         */
+        data class Notification(
+            val title: String?,
+            val body: String,
+            val urgency: Int = 1
+        ) : Action()
     }
 
     /**
@@ -78,11 +91,91 @@ internal class OscParser {
     ): List<Action> {
         return when (command) {
             8 -> handleOsc8(payload, cursorRow, cursorCol, cols)
+            9 -> handleOsc9(payload)
             52 -> handleOsc52(payload)
+            99 -> handleOsc99(payload)
             133 -> handleOsc133(payload, cursorRow, cursorCol)
+            777 -> handleOsc777(payload)
             1337 -> handleOsc1337(payload, cursorRow, cursorCol, cols)
             else -> emptyList()
         }
+    }
+
+    /**
+     * Handle OSC 9 (iTerm2 Growl) notification.
+     *
+     * Format: OSC 9 ; message BEL
+     * Simple notification with message body only.
+     */
+    private fun handleOsc9(payload: String): List<Action> {
+        if (payload.isBlank()) return emptyList()
+        return listOf(Action.Notification(title = null, body = payload))
+    }
+
+    /**
+     * Handle OSC 99 (Kitty) notification.
+     *
+     * Format: OSC 99 ; key=value pairs ; payload ST
+     * Supports parameters: p (payload type), e (urgency), i (id).
+     * Initial implementation handles single-part messages only.
+     */
+    private fun handleOsc99(payload: String): List<Action> {
+        if (payload.isBlank()) return emptyList()
+
+        val parts = payload.split(';')
+        val params = mutableMapOf<String, String>()
+        var body: String? = null
+
+        for (part in parts) {
+            val eqIndex = part.indexOf('=')
+            if (eqIndex > 0) {
+                params[part.substring(0, eqIndex)] = part.substring(eqIndex + 1)
+            } else if (part.isNotBlank()) {
+                body = part
+            }
+        }
+
+        val payloadType = params["p"]
+        val title = if (payloadType == "title") body else null
+        val notifBody = if (payloadType == "title") {
+            params["body"] ?: ""
+        } else {
+            body ?: ""
+        }
+
+        if (notifBody.isBlank() && title.isNullOrBlank()) return emptyList()
+
+        // Map Kitty urgency: 0=system, 1=low, 2=normal(default), 5=critical
+        val kittyUrgency = params["e"]?.toIntOrNull() ?: 2
+        val urgency = when {
+            kittyUrgency <= 1 -> 0
+            kittyUrgency <= 2 -> 1
+            else -> 2
+        }
+
+        return listOf(Action.Notification(
+            title = title,
+            body = notifBody.ifBlank { title ?: "" },
+            urgency = urgency
+        ))
+    }
+
+    /**
+     * Handle OSC 777 (rxvt-unicode/VSCode) notification.
+     *
+     * Format: OSC 777 ; notify ; title ; body BEL
+     * First field must be "notify" for notification subcommand.
+     */
+    private fun handleOsc777(payload: String): List<Action> {
+        val parts = payload.split(';', limit = 3)
+        if (parts.isEmpty() || parts[0] != "notify") return emptyList()
+
+        val title = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+        val body = parts.getOrNull(2)?.takeIf { it.isNotBlank() } ?: title ?: ""
+
+        if (body.isBlank() && title.isNullOrBlank()) return emptyList()
+
+        return listOf(Action.Notification(title = title, body = body))
     }
 
     /**

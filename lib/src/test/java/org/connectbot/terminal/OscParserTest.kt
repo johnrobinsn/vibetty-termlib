@@ -367,4 +367,122 @@ class OscParserTest {
         val action = actions[0] as OscParser.Action.AddSegment
         assertEquals(fileUrl, action.metadata)
     }
+
+    // OSC 9 (iTerm2 Growl) notification tests
+
+    @Test
+    fun testOsc9SimpleNotification() {
+        val parser = OscParser()
+        val actions = parser.parse(9, "Task completed", 0, 0, 80)
+        assertEquals(1, actions.size)
+        val action = actions[0] as OscParser.Action.Notification
+        assertNull(action.title)
+        assertEquals("Task completed", action.body)
+    }
+
+    @Test
+    fun testOsc9EmptyPayloadIgnored() {
+        val parser = OscParser()
+        val actions = parser.parse(9, "", 0, 0, 80)
+        assertTrue(actions.isEmpty())
+    }
+
+    @Test
+    fun testOsc9BlankPayloadIgnored() {
+        val parser = OscParser()
+        val actions = parser.parse(9, "   ", 0, 0, 80)
+        assertTrue(actions.isEmpty())
+    }
+
+    // OSC 777 (rxvt-unicode/VSCode) notification tests
+
+    @Test
+    fun testOsc777NotifyWithTitleAndBody() {
+        val parser = OscParser()
+        val actions = parser.parse(777, "notify;Build;Compilation finished", 0, 0, 80)
+        assertEquals(1, actions.size)
+        val action = actions[0] as OscParser.Action.Notification
+        assertEquals("Build", action.title)
+        assertEquals("Compilation finished", action.body)
+    }
+
+    @Test
+    fun testOsc777NonNotifySubcommandIgnored() {
+        val parser = OscParser()
+        val actions = parser.parse(777, "other;data", 0, 0, 80)
+        assertTrue(actions.isEmpty())
+    }
+
+    @Test
+    fun testOsc777TitleOnly() {
+        val parser = OscParser()
+        val actions = parser.parse(777, "notify;Done", 0, 0, 80)
+        assertEquals(1, actions.size)
+        val action = actions[0] as OscParser.Action.Notification
+        assertEquals("Done", action.title)
+        assertEquals("Done", action.body) // body falls back to title
+    }
+
+    @Test
+    fun testOsc777EmptyPayloadIgnored() {
+        val parser = OscParser()
+        val actions = parser.parse(777, "", 0, 0, 80)
+        assertTrue(actions.isEmpty())
+    }
+
+    @Test
+    fun testOsc777BodyWithSemicolons() {
+        val parser = OscParser()
+        // Body may contain semicolons since we split with limit=3
+        val actions = parser.parse(777, "notify;Title;Body with; semicolons", 0, 0, 80)
+        assertEquals(1, actions.size)
+        val action = actions[0] as OscParser.Action.Notification
+        assertEquals("Title", action.title)
+        assertEquals("Body with; semicolons", action.body)
+    }
+
+    // OSC 99 (Kitty) notification tests
+
+    @Test
+    fun testOsc99SimpleNotification() {
+        val parser = OscParser()
+        val actions = parser.parse(99, "Task finished", 0, 0, 80)
+        assertEquals(1, actions.size)
+        val action = actions[0] as OscParser.Action.Notification
+        assertEquals("Task finished", action.body)
+        assertEquals(1, action.urgency) // default normal urgency
+    }
+
+    @Test
+    fun testOsc99WithUrgency() {
+        val parser = OscParser()
+        val actions = parser.parse(99, "e=5;Critical error", 0, 0, 80)
+        assertEquals(1, actions.size)
+        val action = actions[0] as OscParser.Action.Notification
+        assertEquals("Critical error", action.body)
+        assertEquals(2, action.urgency) // critical
+    }
+
+    @Test
+    fun testOsc99LowUrgency() {
+        val parser = OscParser()
+        val actions = parser.parse(99, "e=1;Low priority", 0, 0, 80)
+        assertEquals(1, actions.size)
+        val action = actions[0] as OscParser.Action.Notification
+        assertEquals(0, action.urgency) // low
+    }
+
+    @Test
+    fun testOsc99EmptyPayloadIgnored() {
+        val parser = OscParser()
+        val actions = parser.parse(99, "", 0, 0, 80)
+        assertTrue(actions.isEmpty())
+    }
+
+    @Test
+    fun testOsc99BlankPayloadIgnored() {
+        val parser = OscParser()
+        val actions = parser.parse(99, "  ", 0, 0, 80)
+        assertTrue(actions.isEmpty())
+    }
 }
