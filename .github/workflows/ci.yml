@@ -107,7 +107,7 @@ jobs:
       - name: Prepare release
         if: ${{ github.event_name == 'push' }}
         run: |
-          if git describe --exact-match; then \
+          if git describe --exact-match 2>/dev/null; then \
             TAGGED=yes
           fi
 
@@ -115,8 +115,13 @@ jobs:
             GITHUB_TAG="$(git describe)"
             echo "${GITHUB_TAG}" > tag.txt
             echo "Release ${GITHUB_TAG}" > release-title.txt
-          else \
+          elif git describe 2>/dev/null; then
             GITHUB_TAG="git-$(git describe)"
+            GITHUB_TITLE="$(git log -1 --pretty=%B | head -1)"
+            echo "${GITHUB_TAG}" > tag.txt
+            echo "${GITHUB_TAG}: ${GITHUB_TITLE}" > release-title.txt
+          else
+            GITHUB_TAG="git-$(git rev-parse --short HEAD)"
             GITHUB_TITLE="$(git log -1 --pretty=%B | head -1)"
             echo "${GITHUB_TAG}" > tag.txt
             echo "${GITHUB_TAG}: ${GITHUB_TITLE}" > release-title.txt
