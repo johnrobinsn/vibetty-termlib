@@ -1027,13 +1027,13 @@ fun TerminalWithAccessibility(
                             zoomOffset = Offset.Zero
 
                             // Two-finger tap detected → right-click (button 2)
-                            if (isTwoFingerTap && onMouseClick != null) {
+                            if (isTwoFingerTap && onMouseClick != null && screenState.snapshot.mouseMode > 0) {
                                 val adjustedX = centerX + horizontalPanOffset
                                 val tapCol = (adjustedX / baseCharWidth).toInt()
                                     .coerceIn(0, screenState.snapshot.cols - 1)
                                 val tapRow = (centerY / baseCharHeight).toInt()
                                     .coerceIn(0, screenState.snapshot.rows - 1)
-                                onMouseClick(tapRow, tapCol, 2)  // 2 = right button
+                                onMouseClick!!(tapRow, tapCol, 2)  // 2 = right button
                             }
 
                             return@awaitEachGesture
@@ -1057,7 +1057,7 @@ fun TerminalWithAccessibility(
 
                             if (event == null) {
                                 // Timeout: finger stationary at edge, send another edge scroll event
-                                onMouseDrag?.invoke(edgeScrollRow!!, edgeScrollCol, 0)
+                                if (screenState.snapshot.mouseMode > 0) onMouseDrag?.invoke(edgeScrollRow!!, edgeScrollCol, 0)
                                 continue
                             }
 
@@ -1077,7 +1077,7 @@ fun TerminalWithAccessibility(
                                     // Movement exceeded touch slop - decide between Scroll and MouseDrag
                                     // based on how long the user held before starting to move
                                     val holdTime = System.currentTimeMillis() - longPressStartTime
-                                    if (onMouseDown != null && holdTime >= MOUSE_DRAG_HOLD_MS) {
+                                    if (onMouseDown != null && screenState.snapshot.mouseMode > 0 && holdTime >= MOUSE_DRAG_HOLD_MS) {
                                         // User held for 250ms+ then started dragging → tmux mouse drag
                                         gestureType = GestureType.MouseDrag
                                         showMagnifier = true
@@ -1086,7 +1086,7 @@ fun TerminalWithAccessibility(
                                             .coerceIn(0, screenState.snapshot.cols - 1)
                                         val row = (down.position.y / baseCharHeight).toInt()
                                             .coerceIn(0, screenState.snapshot.rows - 1)
-                                        onMouseDown(row, col, 0)  // 0 = left button
+                                        onMouseDown!!(row, col, 0)  // 0 = left button
                                     } else {
                                         // Immediate drag → scroll/pan gesture
                                         gestureType = GestureType.Scroll
@@ -1114,8 +1114,8 @@ fun TerminalWithAccessibility(
                                 } else {
                                     // Still within touch slop - check hold duration thresholds
                                     val elapsedTime = System.currentTimeMillis() - longPressStartTime
-                                    if (onMouseDown != null && elapsedTime >= MOUSE_DRAG_HOLD_MS) {
-                                        // Tmux mode: 250ms+ hold without movement → show magnifier
+                                    if (onMouseDown != null && screenState.snapshot.mouseMode > 0 && elapsedTime >= MOUSE_DRAG_HOLD_MS) {
+                                        // Mouse mode: 250ms+ hold without movement → show magnifier
                                         // and enter MouseDrag (sends mouse down, drag on move, up on release)
                                         longPressDetected = true
                                         gestureType = GestureType.MouseDrag
@@ -1125,8 +1125,8 @@ fun TerminalWithAccessibility(
                                             .coerceIn(0, screenState.snapshot.cols - 1)
                                         val row = (down.position.y / baseCharHeight).toInt()
                                             .coerceIn(0, screenState.snapshot.rows - 1)
-                                        onMouseDown(row, col, 0)
-                                    } else if (onMouseDown == null && elapsedTime >= longPressTimeoutMs && selectionManager.mode == SelectionMode.NONE) {
+                                        onMouseDown!!(row, col, 0)
+                                    } else if ((onMouseDown == null || screenState.snapshot.mouseMode == 0) && elapsedTime >= longPressTimeoutMs && selectionManager.mode == SelectionMode.NONE) {
                                         // Normal mode: long press starts terminal text selection with magnifier
                                         longPressDetected = true
                                         gestureType = GestureType.Selection
@@ -1170,7 +1170,7 @@ fun TerminalWithAccessibility(
                                     // Only update vertical scroll if there's meaningful vertical movement
                                     // This prevents horizontal panning from accidentally affecting scroll position
                                     if (kotlin.math.abs(dragAmount.y) > 0.5f) {
-                                        if (onMouseScroll != null) {
+                                        if (onMouseScroll != null && screenState.snapshot.mouseMode > 0) {
                                             // Mouse mode: send mouse wheel events instead of scrollback
                                             // Accumulate drag and fire scroll events per line of movement
                                             mouseScrollAccumulator += dragAmount.y
@@ -1186,7 +1186,7 @@ fun TerminalWithAccessibility(
                                                 // (matches natural scrolling - drag down to see content above)
                                                 val scrollUp = scrollLines > 0
                                                 repeat(kotlin.math.abs(scrollLines)) {
-                                                    onMouseScroll(scrollRow, scrollCol, scrollUp)
+                                                    onMouseScroll!!(scrollRow, scrollCol, scrollUp)
                                                 }
                                                 mouseScrollAccumulator -= scrollLines * (baseCharHeight * 3)
                                             }
@@ -1235,7 +1235,7 @@ fun TerminalWithAccessibility(
                                     }
 
                                     // Send mouse drag events with edge-zone auto-scroll
-                                    if (onMouseDrag != null) {
+                                    if (onMouseDrag != null && screenState.snapshot.mouseMode > 0) {
                                         val dragCol =
                                             ((change.position.x + horizontalPanOffset) / baseCharWidth).toInt()
                                         val rawRow =
@@ -1260,11 +1260,11 @@ fun TerminalWithAccessibility(
                                             val edgeRow = if (inTopEdge) 0 else screenState.snapshot.rows
                                             edgeScrollRow = edgeRow
                                             edgeScrollCol = dragCol
-                                            onMouseDrag(edgeRow, dragCol, 0)
+                                            onMouseDrag!!(edgeRow, dragCol, 0)
                                         } else {
                                             // Normal zone: clear edge state, send actual coordinates
                                             edgeScrollRow = null
-                                            onMouseDrag(rawRow, dragCol, 0)
+                                            onMouseDrag!!(rawRow, dragCol, 0)
                                         }
                                     }
                                     magnifierPosition = change.position
@@ -1326,7 +1326,7 @@ fun TerminalWithAccessibility(
 
                                 // Skip vertical fling animation when mouse scroll mode is enabled
                                 // (vertical drag sends mouse wheel events, not scrollback)
-                                if (onMouseScroll != null) {
+                                if (onMouseScroll != null && screenState.snapshot.mouseMode > 0) {
                                     isUserScrolling = false
                                 } else {
                                     val gestureGen = thisGestureGeneration  // Capture for coroutine
@@ -1381,12 +1381,12 @@ fun TerminalWithAccessibility(
 
                             GestureType.MouseDrag -> {
                                 // Send mouse release at final position
-                                if (onMouseUp != null) {
+                                if (onMouseUp != null && screenState.snapshot.mouseMode > 0) {
                                     val releaseCol =
                                         ((lastDragPosition.x + horizontalPanOffset) / baseCharWidth).toInt()
                                     val releaseRow =
                                         (lastDragPosition.y / baseCharHeight).toInt()
-                                    onMouseUp(releaseRow, releaseCol, 0)  // 0 = left button
+                                    onMouseUp!!(releaseRow, releaseCol, 0)  // 0 = left button
                                 }
                                 // Keep magnifier visible for 1 second after release
                                 // so user can see where they landed
@@ -1415,13 +1415,13 @@ fun TerminalWithAccessibility(
                                     if (hyperlinkUrl != null) {
                                         // User tapped on a hyperlink
                                         onHyperlinkClick(hyperlinkUrl)
-                                    } else if (onMouseDown != null && onMouseUp != null) {
-                                        // Tmux mode: send full down+up click sequence
-                                        onMouseDown(tapRow, tapCol, 0)
-                                        onMouseUp(tapRow, tapCol, 0)
-                                    } else if (onMouseClick != null) {
+                                    } else if (screenState.snapshot.mouseMode > 0 && onMouseDown != null && onMouseUp != null) {
+                                        // Mouse mode: send full down+up click sequence
+                                        onMouseDown!!(tapRow, tapCol, 0)
+                                        onMouseUp!!(tapRow, tapCol, 0)
+                                    } else if (onMouseClick != null && screenState.snapshot.mouseMode > 0) {
                                         // Basic mouse mode: send tap as mouse click
-                                        onMouseClick(tapRow, tapCol, 0)  // 0 = left button
+                                        onMouseClick!!(tapRow, tapCol, 0)  // 0 = left button
                                     } else {
                                         // Request focus when terminal is tapped to show keyboard
                                         if (keyboardEnabled) {

@@ -343,6 +343,7 @@ class SelectionControllerTest {
             cursorBlink = true,
             cursorShape = CursorShape.BLOCK,
             terminalTitle = "",
+            mouseMode = 0,
             rows = 25,
             cols = 80,
             timestamp = 0L,

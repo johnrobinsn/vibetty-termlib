@@ -106,6 +106,12 @@ sealed interface TerminalEmulator {
     val dimensions: TerminalDimensions
 
     /**
+     * Current mouse tracking mode set by the remote application via DECSET.
+     * 0 = NONE, 1 = CLICK, 2 = DRAG, 3 = MOVE
+     */
+    val mouseMode: Int
+
+    /**
      * Enable or disable the Kitty keyboard protocol user preference.
      * The protocol is only active when both the user has enabled it AND
      * an application has pushed a mode via CSI > flags u.
@@ -287,6 +293,10 @@ internal class TerminalEmulatorImpl(
 
     // Terminal properties
     private var terminalTitle = ""
+
+    // Mouse tracking mode (set by remote via DECSET 1000/1002/1003)
+    override var mouseMode: Int = 0
+        private set
 
     // Scrollback buffer
     private val scrollback = mutableListOf<TerminalLine>()
@@ -584,15 +594,23 @@ internal class TerminalEmulatorImpl(
                     }
                 }
                 is TerminalProperty.IntValue -> {
-                    // Property 6 is VTERM_PROP_CURSORSHAPE (from vterm.h line 260)
-                    if (prop == 6) {
-                        cursorShape = when (value.value) {
-                            1 -> CursorShape.BLOCK       // VTERM_PROP_CURSORSHAPE_BLOCK
-                            2 -> CursorShape.UNDERLINE   // VTERM_PROP_CURSORSHAPE_UNDERLINE
-                            3 -> CursorShape.BAR_LEFT    // VTERM_PROP_CURSORSHAPE_BAR_LEFT
-                            else -> CursorShape.BLOCK
+                    when (prop) {
+                        // Property 6 is VTERM_PROP_CURSORSHAPE (from vterm.h line 260)
+                        6 -> {
+                            cursorShape = when (value.value) {
+                                1 -> CursorShape.BLOCK       // VTERM_PROP_CURSORSHAPE_BLOCK
+                                2 -> CursorShape.UNDERLINE   // VTERM_PROP_CURSORSHAPE_UNDERLINE
+                                3 -> CursorShape.BAR_LEFT    // VTERM_PROP_CURSORSHAPE_BAR_LEFT
+                                else -> CursorShape.BLOCK
+                            }
+                            propertyChanged = true
                         }
-                        propertyChanged = true
+                        // Property 8 is VTERM_PROP_MOUSE (from vterm.h line 261)
+                        // 0=NONE, 1=CLICK, 2=DRAG, 3=MOVE
+                        8 -> {
+                            mouseMode = value.value
+                            propertyChanged = true
+                        }
                     }
                 }
                 else -> {
@@ -1040,6 +1058,7 @@ internal class TerminalEmulatorImpl(
             cursorShape = cursorShape,
             cursorBlink = cursorBlink,
             terminalTitle = terminalTitle,
+            mouseMode = mouseMode,
             rows = rows,
             cols = cols,
             timestamp = System.currentTimeMillis(),

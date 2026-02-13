@@ -46,6 +46,7 @@ internal enum class CursorShape {
  * @property cursorVisible Whether the cursor is currently visible
  * @property cursorShape The shape of the cursor (block, underline, or bar)
  * @property terminalTitle The terminal window title (set by escape sequences)
+ * @property mouseMode Mouse tracking mode requested by remote (0=NONE, 1=CLICK, 2=DRAG, 3=MOVE)
  * @property rows Number of rows in the visible terminal
  * @property cols Number of columns in the visible terminal
  * @property timestamp Timestamp when this snapshot was created (System.currentTimeMillis())
@@ -60,6 +61,7 @@ internal data class TerminalSnapshot(
     val cursorBlink: Boolean,
     val cursorShape: CursorShape,
     val terminalTitle: String,
+    val mouseMode: Int,
     val rows: Int,
     val cols: Int,
     val timestamp: Long,
@@ -86,6 +88,7 @@ internal data class TerminalSnapshot(
                 cursorBlink = true,
                 cursorShape = CursorShape.BLOCK,
                 terminalTitle = "",
+                mouseMode = 0,
                 rows = rows,
                 cols = cols,
                 timestamp = System.currentTimeMillis(),
