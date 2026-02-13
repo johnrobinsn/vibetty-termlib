@@ -139,7 +139,7 @@ jobs:
             ConnectBotTerminal-*.aar
 
       - name: Upload to Sonatype
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'connectbot/termlib'
         run: |
           ./gradlew publishToMavenCentral -PmavenCentralUsername=${ORG_GRADLE_PROJECT_mavenCentralUsername} -PmavenCentralPassword=${ORG_GRADLE_PROJECT_mavenCentralPassword}
         env:
