@@ -95,9 +95,11 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Gesture type for unified gesture handling state machine.
@@ -473,6 +475,7 @@ fun TerminalWithAccessibility(
     // Magnifying glass state
     var showMagnifier by remember(terminalEmulator) { mutableStateOf(false) }
     var magnifierPosition by remember(terminalEmulator) { mutableStateOf(Offset.Zero) }
+    var magnifierLingerJob by remember(terminalEmulator) { mutableStateOf<Job?>(null) }
 
     // Cursor blink state
     var cursorBlinkVisible by remember(terminalEmulator) { mutableStateOf(true) }
@@ -893,8 +896,15 @@ fun TerminalWithAccessibility(
                         var thisGestureGeneration = 0  // Tracks which generation this gesture belongs to
                         var gestureMaxScroll = 0f  // Will be set when entering scroll mode
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        // Cancel any lingering magnifier from previous gesture
+                        magnifierLingerJob?.cancel()
+                        magnifierLingerJob = null
+                        showMagnifier = false
                         var lastDragPosition = down.position  // Track last position for swipe-up detection
                         var mouseScrollAccumulator = 0f  // Accumulate drag for mouse wheel events
+                        var edgeScrollRow: Int? = null  // Non-null when finger is in edge zone
+                        var edgeScrollCol = 0  // Last column for edge scroll events
+                        var edgeScrollDelay = 150L  // Timeout between edge scroll repeats (speed gradient)
 
                         // 1. Check if touching a selection handle first
                         if (selectionManager.mode != SelectionMode.NONE && !selectionManager.isSelecting) {
@@ -1035,8 +1045,22 @@ fun TerminalWithAccessibility(
 
                         // 5. Event loop for single-touch gestures
                         while (true) {
-                            val event: PointerEvent =
+                            // Use timeout when at edge zone so we can keep sending
+                            // edge scroll events even when finger is stationary
+                            val event: PointerEvent? = if (edgeScrollRow != null) {
+                                withTimeoutOrNull(edgeScrollDelay) {
+                                    awaitPointerEvent(PointerEventPass.Main)
+                                }
+                            } else {
                                 awaitPointerEvent(PointerEventPass.Main)
+                            }
+
+                            if (event == null) {
+                                // Timeout: finger stationary at edge, send another edge scroll event
+                                onMouseDrag?.invoke(edgeScrollRow!!, edgeScrollCol, 0)
+                                continue
+                            }
+
                             if (event.changes.all { !it.pressed }) break
 
                             val change = event.changes.first()
@@ -1056,6 +1080,8 @@ fun TerminalWithAccessibility(
                                     if (onMouseDown != null && holdTime >= MOUSE_DRAG_HOLD_MS) {
                                         // User held for 250ms+ then started dragging → tmux mouse drag
                                         gestureType = GestureType.MouseDrag
+                                        showMagnifier = true
+                                        magnifierPosition = down.position
                                         val col = ((down.position.x + horizontalPanOffset) / baseCharWidth).toInt()
                                             .coerceIn(0, screenState.snapshot.cols - 1)
                                         val row = (down.position.y / baseCharHeight).toInt()
@@ -1088,8 +1114,20 @@ fun TerminalWithAccessibility(
                                 } else {
                                     // Still within touch slop - check hold duration thresholds
                                     val elapsedTime = System.currentTimeMillis() - longPressStartTime
-                                    if (elapsedTime >= longPressTimeoutMs && selectionManager.mode == SelectionMode.NONE) {
-                                        // Long press detected - start terminal text selection with magnifier
+                                    if (onMouseDown != null && elapsedTime >= MOUSE_DRAG_HOLD_MS) {
+                                        // Tmux mode: 250ms+ hold without movement → show magnifier
+                                        // and enter MouseDrag (sends mouse down, drag on move, up on release)
+                                        longPressDetected = true
+                                        gestureType = GestureType.MouseDrag
+                                        showMagnifier = true
+                                        magnifierPosition = down.position
+                                        val col = ((down.position.x + horizontalPanOffset) / baseCharWidth).toInt()
+                                            .coerceIn(0, screenState.snapshot.cols - 1)
+                                        val row = (down.position.y / baseCharHeight).toInt()
+                                            .coerceIn(0, screenState.snapshot.rows - 1)
+                                        onMouseDown(row, col, 0)
+                                    } else if (onMouseDown == null && elapsedTime >= longPressTimeoutMs && selectionManager.mode == SelectionMode.NONE) {
+                                        // Normal mode: long press starts terminal text selection with magnifier
                                         longPressDetected = true
                                         gestureType = GestureType.Selection
 
@@ -1179,16 +1217,57 @@ fun TerminalWithAccessibility(
                                 }
 
                                 GestureType.MouseDrag -> {
-                                    // Send mouse drag events per cell change
+                                    // Auto-pan to keep drag position visible when near screen edges
+                                    if (isHorizontalPanEnabled) {
+                                        val edgeMargin = baseCharWidth * 2
+                                        val fingerX = change.position.x
+                                        if (fingerX < edgeMargin) {
+                                            // Near left edge - pan left
+                                            val panAmount = (edgeMargin - fingerX).coerceAtMost(baseCharWidth)
+                                            horizontalPanOffset = (horizontalPanOffset - panAmount)
+                                                .coerceIn(0f, maxHorizontalPan)
+                                        } else if (fingerX > availableWidth - edgeMargin) {
+                                            // Near right edge - pan right
+                                            val panAmount = (fingerX - (availableWidth - edgeMargin)).coerceAtMost(baseCharWidth)
+                                            horizontalPanOffset = (horizontalPanOffset + panAmount)
+                                                .coerceIn(0f, maxHorizontalPan)
+                                        }
+                                    }
+
+                                    // Send mouse drag events with edge-zone auto-scroll
                                     if (onMouseDrag != null) {
                                         val dragCol =
                                             ((change.position.x + horizontalPanOffset) / baseCharWidth).toInt()
-                                                .coerceIn(0, screenState.snapshot.cols - 1)
-                                        val dragRow =
+                                        val rawRow =
                                             (change.position.y / baseCharHeight).toInt()
-                                                .coerceIn(0, screenState.snapshot.rows - 1)
-                                        onMouseDrag(dragRow, dragCol, 0)  // 0 = left button
+
+                                        // Edge zone: 15% of screen height from top/bottom
+                                        val edgeZoneSize = availableHeight * 0.12f
+                                        val inTopEdge = change.position.y < edgeZoneSize
+                                        val inBottomEdge = change.position.y > availableHeight - edgeZoneSize
+
+                                        if (inTopEdge || inBottomEdge) {
+                                            // Speed gradient: faster scroll the closer to the edge
+                                            // fraction 0.0 = just entered zone, 1.0 = at the very edge
+                                            val fraction = if (inTopEdge) {
+                                                1f - (change.position.y / edgeZoneSize)
+                                            } else {
+                                                (change.position.y - (availableHeight - edgeZoneSize)) / edgeZoneSize
+                                            }.coerceIn(0f, 1f)
+                                            // Lerp from 300ms (slow, outer edge) to 50ms (fast, inner edge)
+                                            edgeScrollDelay = (300f - fraction * 250f).toLong()
+
+                                            val edgeRow = if (inTopEdge) 0 else screenState.snapshot.rows
+                                            edgeScrollRow = edgeRow
+                                            edgeScrollCol = dragCol
+                                            onMouseDrag(edgeRow, dragCol, 0)
+                                        } else {
+                                            // Normal zone: clear edge state, send actual coordinates
+                                            edgeScrollRow = null
+                                            onMouseDrag(rawRow, dragCol, 0)
+                                        }
                                     }
+                                    magnifierPosition = change.position
                                 }
 
                                 else -> {}
@@ -1305,11 +1384,15 @@ fun TerminalWithAccessibility(
                                 if (onMouseUp != null) {
                                     val releaseCol =
                                         ((lastDragPosition.x + horizontalPanOffset) / baseCharWidth).toInt()
-                                            .coerceIn(0, screenState.snapshot.cols - 1)
                                     val releaseRow =
                                         (lastDragPosition.y / baseCharHeight).toInt()
-                                            .coerceIn(0, screenState.snapshot.rows - 1)
                                     onMouseUp(releaseRow, releaseCol, 0)  // 0 = left button
+                                }
+                                // Keep magnifier visible for 1 second after release
+                                // so user can see where they landed
+                                magnifierLingerJob = coroutineScope.launch {
+                                    delay(1000L)
+                                    showMagnifier = false
                                 }
                             }
 
@@ -1461,6 +1544,9 @@ fun TerminalWithAccessibility(
         if (showMagnifier) {
             MagnifyingGlass(
                 position = magnifierPosition,
+                horizontalPanOffset = horizontalPanOffset,
+                screenWidth = availableWidth.toFloat(),
+                screenHeight = availableHeight.toFloat(),
                 screenState = screenState,
                 baseCharWidth = baseCharWidth,
                 baseCharHeight = baseCharHeight,
@@ -1787,6 +1873,9 @@ private fun isTouchingHandle(
 @Composable
 private fun MagnifyingGlass(
     position: Offset,
+    horizontalPanOffset: Float = 0f,
+    screenWidth: Float = Float.MAX_VALUE,
+    screenHeight: Float = Float.MAX_VALUE,
     screenState: TerminalScreenState,
     baseCharWidth: Float,
     baseCharHeight: Float,
@@ -1801,16 +1890,41 @@ private fun MagnifyingGlass(
     val density = LocalDensity.current
     val magnifierSizePx = with(density) { magnifierSize.toPx() }
 
-    // Position magnifying glass well above the finger (so it's visible)
+    // Position magnifying glass to stay visible and not under the finger
+    // Priority: above → left → below
     val verticalOffset = with(density) { MAGNIFIER_VERTICAL_OFFSET.toPx() }
-    val magnifierPos = Offset(
-        x = (position.x - magnifierSizePx / 2).coerceIn(0f, Float.MAX_VALUE),
-        y = (position.y - verticalOffset - magnifierSizePx).coerceAtLeast(0f)
-    )
+    val fingerClearance = magnifierSizePx * 0.4f  // minimum gap to avoid overlapping finger
+
+    val aboveY = position.y - verticalOffset - magnifierSizePx
+    val belowY = position.y + verticalOffset
+    val leftX = position.x - verticalOffset - magnifierSizePx
+    val centerX = position.x - magnifierSizePx / 2
+
+    val magnifierPos = if (aboveY >= 0f) {
+        // Preferred: above the finger, centered horizontally
+        Offset(
+            x = centerX.coerceIn(0f, (screenWidth - magnifierSizePx).coerceAtLeast(0f)),
+            y = aboveY
+        )
+    } else if (leftX >= 0f) {
+        // Too close to top: place to the left of the finger
+        Offset(
+            x = leftX,
+            y = 0f.coerceAtMost((screenHeight - magnifierSizePx).coerceAtLeast(0f))
+        )
+    } else {
+        // Too close to top and left: place below the finger
+        Offset(
+            x = centerX.coerceIn(0f, (screenWidth - magnifierSizePx).coerceAtLeast(0f)),
+            y = belowY.coerceAtMost((screenHeight - magnifierSizePx).coerceAtLeast(0f))
+        )
+    }
 
     // The actual touch point that should be centered in the magnifier
+    // Account for horizontal pan offset so magnifier shows correct content
+    val contentX = position.x + horizontalPanOffset
     val centerOffset = Offset(
-        x = position.x - (magnifierSizePx / magnifierScale) * MAGNIFIER_CENTER_OFFSET_MULTIPLIER,
+        x = contentX - (magnifierSizePx / magnifierScale) * MAGNIFIER_CENTER_OFFSET_MULTIPLIER,
         y = position.y - (magnifierSizePx / magnifierScale) * MAGNIFIER_CENTER_OFFSET_MULTIPLIER,
     )
 
@@ -1863,6 +1977,17 @@ private fun MagnifyingGlass(
                     }
                 }
             }
+
+            // Draw small orange dot at the exact touch point location within the magnifier
+            val dotRadius = 3f * magnifierScale
+            val dotX = magnifierSizePx / 2f + (position.x - magnifierPos.x - magnifierSizePx / 2f) * magnifierScale
+            val dotY = magnifierSizePx / 2f + (position.y - magnifierPos.y - magnifierSizePx / 2f) * magnifierScale
+            // The touch point is always centered in the magnified content, so the dot goes at center
+            drawCircle(
+                color = Color(0xFF4CAF50),
+                radius = dotRadius,
+                center = Offset(magnifierSizePx / 2f, magnifierSizePx / 2f)
+            )
         }
     }
 }
