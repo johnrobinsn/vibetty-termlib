@@ -141,8 +141,12 @@ internal class ImeInputView(
         private val fakeBuffer = StringBuilder()
         private val maxBufferSize = 1000
 
-        // Timestamp of the last text commit to avoid spurious backspace from voice keyboard
-        private var lastCommitTime = 0L
+        // Flag set after text is committed (via finishComposingText or commitText).
+        // Prevents the backspace hack from firing on spurious finishComposingText calls
+        // that Google Voice Keyboard sends when exiting voice mode.
+        // Cleared when new composing text starts (setComposingText), indicating a new
+        // dictation session where the hack may be needed again.
+        private var textCommittedSinceLastComposing = false
 
         override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence {
             if (!enableVoiceInputSupport) {
@@ -197,6 +201,8 @@ internal class ImeInputView(
             // Voice input support: track composing text for overlay display
             currentComposingText = text?.toString()
             onComposingTextChanged(currentComposingText)
+            // New composing session started — re-enable backspace hack
+            textCommittedSinceLastComposing = false
             return true
         }
 
@@ -217,15 +223,13 @@ internal class ImeInputView(
                 Log.d("ImeInputView", "finishComposingText: committing '$textToCommit'")
                 addToFakeBuffer(textToCommit)
                 onTextCommitted(textToCommit)
-                // Mark that we just committed text so we don't treat the next
-                // finishComposingText as a backspace (voice keyboard sends extra calls)
-                lastCommitTime = System.currentTimeMillis()
-            } else if (fakeBuffer.isNotEmpty() && System.currentTimeMillis() - lastCommitTime > 500) {
+                textCommittedSinceLastComposing = true
+            } else if (fakeBuffer.isNotEmpty() && !textCommittedSinceLastComposing) {
                 // HACK: Google Voice Keyboard calls finishComposingText repeatedly for backspace
                 // instead of deleteSurroundingText. When composing is null but we have buffer,
                 // treat this as a backspace request.
-                // Guard: skip if we just committed text (< 500ms ago) since voice keyboard
-                // fires extra finishComposingText calls after committing.
+                // Guard: skip if text was committed since the last setComposingText call,
+                // since voice keyboard fires extra finishComposingText calls when exiting.
                 Log.d("ImeInputView", "finishComposingText: treating as backspace (voice keyboard hack)")
                 sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL))
                 sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL))
@@ -260,6 +264,7 @@ internal class ImeInputView(
 
             // Send committed text via callback
             onTextCommitted(text.toString())
+            textCommittedSinceLastComposing = true
             return true
         }
 
